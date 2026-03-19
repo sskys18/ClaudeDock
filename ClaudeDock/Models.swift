@@ -34,8 +34,3 @@ struct AppConfig: Codable {
 
     static let defaultConfig = AppConfig(refreshInterval: 30)
 }
-
-enum PlanType: String {
-    case pro = "Pro"
-    case max = "Max"
-}
