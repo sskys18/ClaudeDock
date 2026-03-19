@@ -55,18 +55,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     private func updateMenuBarTitle(_ result: FetchResult) {
         guard let limits = result.limits, let fiveHour = limits.five_hour else {
             if result.error != nil {
-                statusItem.button?.title = "!"
-                statusItem.button?.contentTintColor = .systemRed
+                setMenuBarText("!", color: .systemRed)
             } else {
-                statusItem.button?.title = "--"
-                statusItem.button?.contentTintColor = nil
+                setMenuBarText("--", color: .white)
             }
             return
         }
 
         let pct = Int(min(100, max(0, fiveHour.utilization)).rounded())
-        statusItem.button?.title = "\(pct)%"
-        statusItem.button?.contentTintColor = colorForPercent(fiveHour.utilization)
+        setMenuBarText("\(pct)%", color: colorForPercent(fiveHour.utilization))
 
         // If resets_at is in the past, trigger one refresh (guarded to prevent loop)
         if let resetsAt = fiveHour.resets_at, !hasTriggeredResetRefresh {
@@ -101,6 +98,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             built.removeItem(item)
             menu.addItem(item)
         }
+    }
+
+    private func setMenuBarText(_ text: String, color: NSColor) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .foregroundColor: color,
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        ]
+        statusItem.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
 
     private func colorForPercent(_ pct: Double) -> NSColor {
