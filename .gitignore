@@ -14,3 +14,6 @@ DerivedData/
 
 # Cache
 *.swp
+
+# Docs (contain auth/API details)
+docs/
