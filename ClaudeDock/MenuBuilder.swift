@@ -134,13 +134,28 @@ class MenuBuilder {
             return ""
         }
 
-        if date <= Date() {
+        let now = Date()
+        if date <= now {
             return "Resetting..."
         }
 
+        let diff = Calendar.current.dateComponents([.day, .hour, .minute], from: now, to: date)
+        let d = diff.day ?? 0
+        let h = diff.hour ?? 0
+        let m = diff.minute ?? 0
+
+        var countdown: String
+        if d > 0 {
+            countdown = "\(d)d \(h)h"
+        } else if h > 0 {
+            countdown = "\(h)h \(m)m"
+        } else {
+            countdown = "\(m)m"
+        }
+
         let df = DateFormatter()
-        df.dateFormat = "MMM d, h:mm a"
-        return "Resets \(df.string(from: date))"
+        df.dateFormat = "MMdd HH:mm"
+        return "Resets in \(countdown) (\(df.string(from: date)))"
     }
 
     private func formatInterval(_ seconds: Int) -> String {
