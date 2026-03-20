@@ -36,8 +36,7 @@ class UsageItemView: NSView {
         addSubview(titleLabel)
 
         // Percentage
-        let pct = Int(utilization.rounded())
-        percentLabel.stringValue = "\(pct)%"
+        percentLabel.stringValue = String(format: "%.1f%%", utilization)
         percentLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         percentLabel.textColor = colorForPercent(utilization)
         percentLabel.alignment = .right

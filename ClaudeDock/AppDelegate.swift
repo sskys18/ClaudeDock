@@ -62,8 +62,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             return
         }
 
-        let pct = Int(min(100, max(0, fiveHour.utilization)).rounded())
-        setMenuBarText("\(pct)%", color: colorForPercent(fiveHour.utilization))
+        let clamped = min(100, max(0, fiveHour.utilization))
+        setMenuBarText(String(format: "%.1f%%", clamped), color: colorForPercent(clamped))
 
         // If resets_at is in the past, trigger one refresh (guarded to prevent loop)
         if let resetsAt = fiveHour.resets_at, !hasTriggeredResetRefresh {

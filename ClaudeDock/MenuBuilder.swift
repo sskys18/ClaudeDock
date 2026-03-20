@@ -14,7 +14,7 @@ class MenuBuilder {
         if let limits = result.limits {
             // 5-Hour
             if let fiveHour = limits.five_hour {
-                let resetText = formatReset(fiveHour.resets_at, style: .countdown)
+                let resetText = formatReset(fiveHour.resets_at)
                 let view = UsageItemView(
                     title: "5-Hour Limit",
                     utilization: fiveHour.utilization,
@@ -28,7 +28,7 @@ class MenuBuilder {
 
             // 7-Day
             if let sevenDay = limits.seven_day {
-                let resetText = formatReset(sevenDay.resets_at, style: .date)
+                let resetText = formatReset(sevenDay.resets_at)
                 let view = UsageItemView(
                     title: "7-Day Limit",
                     utilization: sevenDay.utilization,
@@ -42,7 +42,7 @@ class MenuBuilder {
 
             // 7-Day Sonnet
             if let sonnet = limits.seven_day_sonnet {
-                let resetText = formatReset(sonnet.resets_at, style: .date)
+                let resetText = formatReset(sonnet.resets_at)
                 let view = UsageItemView(
                     title: "7-Day Sonnet",
                     utilization: sonnet.utilization,
@@ -125,9 +125,7 @@ class MenuBuilder {
 
     // MARK: - Formatting
 
-    private enum ResetStyle { case countdown, date }
-
-    private func formatReset(_ isoDate: String?, style: ResetStyle) -> String {
+    private func formatReset(_ isoDate: String?) -> String {
         guard let isoDate, !isoDate.isEmpty else { return "" }
 
         let formatter = ISO8601DateFormatter()
@@ -136,25 +134,13 @@ class MenuBuilder {
             return ""
         }
 
-        let now = Date()
-        if date <= now {
+        if date <= Date() {
             return "Resetting..."
         }
 
-        switch style {
-        case .countdown:
-            let diff = Calendar.current.dateComponents([.hour, .minute], from: now, to: date)
-            let h = diff.hour ?? 0
-            let m = diff.minute ?? 0
-            if h > 0 {
-                return "Resets in \(h)h \(m)m"
-            }
-            return "Resets in \(m)m"
-        case .date:
-            let df = DateFormatter()
-            df.dateFormat = "MMM d"
-            return "Resets \(df.string(from: date))"
-        }
+        let df = DateFormatter()
+        df.dateFormat = "MMM d, h:mm a"
+        return "Resets \(df.string(from: date))"
     }
 
     private func formatInterval(_ seconds: Int) -> String {
