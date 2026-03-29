@@ -76,6 +76,9 @@ class UsageService {
             }
 
             guard httpResponse.statusCode == 200 else {
+                if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                    KeychainReader.clearCache()
+                }
                 return FetchResult(limits: nil, stale: false, error: .apiError)
             }
 

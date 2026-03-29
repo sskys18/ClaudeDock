@@ -6,11 +6,19 @@ enum KeychainReader {
         pattern: #""accessToken"\s*:\s*"(sk-ant-[^"]+)""#
     )
 
+    private static var cachedToken: String?
+
     static func getCredentials() -> String? {
-        if let token = readFromKeychain() {
+        if let token = cachedToken {
             return token
         }
-        return readFromFile()
+        let token = readFromKeychain() ?? readFromFile()
+        cachedToken = token
+        return token
+    }
+
+    static func clearCache() {
+        cachedToken = nil
     }
 
     private static func readFromKeychain() -> String? {
