@@ -8,6 +8,9 @@ let package = Package(
         .executableTarget(
             name: "ClaudeDock",
             path: "ClaudeDock",
+            exclude: [
+                "Info.plist",
+            ],
             linkerSettings: [
                 .linkedFramework("Cocoa"),
                 .linkedFramework("Security"),

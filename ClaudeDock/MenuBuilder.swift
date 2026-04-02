@@ -11,90 +11,13 @@ class MenuBuilder {
     func buildMenu(from result: FetchResult) -> NSMenu {
         let menu = NSMenu()
 
-        if let limits = result.limits {
-            // 5-Hour
-            if let fiveHour = limits.five_hour {
-                let resetText = formatReset(fiveHour.resets_at)
-                let view = UsageItemView(
-                    title: "5-Hour Limit",
-                    utilization: fiveHour.utilization,
-                    resetText: resetText
-                )
-                let item = NSMenuItem()
-                item.view = view
-                menu.addItem(item)
-                menu.addItem(.separator())
-            }
+        buildClaudeSection(into: menu, result: result)
+        buildCodexSection(into: menu, result: result)
 
-            // 7-Day
-            if let sevenDay = limits.seven_day {
-                let resetText = formatReset(sevenDay.resets_at)
-                let view = UsageItemView(
-                    title: "7-Day Limit",
-                    utilization: sevenDay.utilization,
-                    resetText: resetText
-                )
-                let item = NSMenuItem()
-                item.view = view
-                menu.addItem(item)
-                menu.addItem(.separator())
-            }
-
-            // 7-Day Sonnet
-            if let sonnet = limits.seven_day_sonnet {
-                let resetText = formatReset(sonnet.resets_at)
-                let view = UsageItemView(
-                    title: "7-Day Sonnet",
-                    utilization: sonnet.utilization,
-                    resetText: resetText
-                )
-                let item = NSMenuItem()
-                item.view = view
-                menu.addItem(item)
-                menu.addItem(.separator())
-            }
-
-            // Plan type
-            let planType = limits.seven_day != nil ? "Max" : "Pro"
-            let planItem = NSMenuItem(title: "Plan: \(planType)", action: nil, keyEquivalent: "")
-            planItem.isEnabled = false
-            menu.addItem(planItem)
-            menu.addItem(.separator())
-
-        } else if let error = result.error {
-            let errorText: String
-            switch error {
-            case .noKey:
-                errorText = "No credentials found. Log in to Claude Code first."
-            case .apiError:
-                errorText = "Auth error — check Claude Code login"
-            case .rateLimited:
-                errorText = "Rate limited — using cached data"
-            }
-            let item = NSMenuItem(title: errorText, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-            menu.addItem(.separator())
-        } else {
-            let item = NSMenuItem(title: "Loading...", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-            menu.addItem(.separator())
-        }
-
-        if result.stale {
-            let staleItem = NSMenuItem(title: "⚠ Using cached data", action: nil, keyEquivalent: "")
-            staleItem.isEnabled = false
-            menu.addItem(staleItem)
-            menu.addItem(.separator())
-        }
-
-        // Refresh Now
-        let refreshItem = NSMenuItem(title: "↻ Refresh Now", action: #selector(MenuBuilderDelegate.refreshNow), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "↻ Refresh", action: #selector(MenuBuilderDelegate.refreshNow), keyEquivalent: "r")
         refreshItem.target = delegate
         menu.addItem(refreshItem)
 
-        // Auto-refresh submenu
         let autoRefreshItem = NSMenuItem(title: "Auto-refresh: \(formatInterval(currentInterval))", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         for seconds in [15, 30, 60, 120, 300] {
@@ -112,7 +35,6 @@ class MenuBuilder {
 
         menu.addItem(.separator())
 
-        // Quit
         let quitItem = NSMenuItem(title: "Quit ClaudeDock", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
@@ -123,17 +45,171 @@ class MenuBuilder {
         currentInterval = seconds
     }
 
+    // MARK: - Sections
+
+    private func buildClaudeSection(into menu: NSMenu, result: FetchResult) {
+        addSectionHeader("Claude", to: menu)
+
+        if let limits = result.claudeLimits {
+            if let fiveHour = limits.five_hour {
+                addUsageRow(
+                    title: "5-Hour Limit",
+                    percent: fiveHour.utilization,
+                    detailText: formatReset(fiveHour.resets_at),
+                    semantics: .utilization,
+                    to: menu
+                )
+            }
+
+            if let sevenDay = limits.seven_day {
+                addUsageRow(
+                    title: "7-Day Limit",
+                    percent: sevenDay.utilization,
+                    detailText: formatReset(sevenDay.resets_at),
+                    semantics: .utilization,
+                    to: menu
+                )
+            }
+
+            if let sonnet = limits.seven_day_sonnet {
+                addUsageRow(
+                    title: "7-Day Sonnet",
+                    percent: sonnet.utilization,
+                    detailText: formatReset(sonnet.resets_at),
+                    semantics: .utilization,
+                    to: menu
+                )
+            }
+
+            let planType = limits.seven_day != nil ? "Max" : "Pro"
+            let planItem = NSMenuItem(title: "Plan: \(planType)", action: nil, keyEquivalent: "")
+            planItem.isEnabled = false
+            menu.addItem(planItem)
+        } else if let error = result.error {
+            let errorText: String
+            switch error {
+            case .noKey:
+                errorText = "No credentials found. Log in to Claude Code first."
+            case .apiError:
+                errorText = "Auth error — check Claude Code login"
+            case .rateLimited:
+                errorText = "Rate limited — using cached data"
+            }
+            let item = NSMenuItem(title: errorText, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        } else {
+            let item = NSMenuItem(title: "Loading...", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+    }
+
+    private func buildCodexSection(into menu: NSMenu, result: FetchResult) {
+        addSectionHeader("Codex", to: menu)
+
+        guard let codexMetrics = result.codexMetrics, codexMetrics.hasVisibleQuota else {
+            let item = NSMenuItem(title: "Codex metrics unavailable", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            menu.addItem(.separator())
+            return
+        }
+
+        if let fiveHour = codexMetrics.five_hour_limit_pct {
+            addUsageRow(
+                title: "5-Hour Limit",
+                percent: fiveHour,
+                detailText: formatCodexReset(codexMetrics.five_hour_resets_at, fallbackActivity: codexMetrics.last_activity),
+                semantics: .utilization,
+                to: menu
+            )
+        }
+
+        if let weekly = codexMetrics.weekly_limit_pct {
+            addUsageRow(
+                title: "Weekly Limit",
+                percent: weekly,
+                detailText: formatCodexReset(codexMetrics.weekly_resets_at, fallbackActivity: codexMetrics.last_activity),
+                semantics: .utilization,
+                to: menu
+            )
+        }
+
+        if let planType = codexMetrics.plan_type, !planType.isEmpty {
+            let item = NSMenuItem(title: "Plan: \(planType.capitalized)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+    }
+
+    private func addSectionHeader(_ title: String, to menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        menu.addItem(item)
+    }
+
+    private func addUsageRow(title: String, percent: Double, detailText: String, semantics: PercentageSemantic, to menu: NSMenu) {
+        let view = UsageItemView(
+            title: title,
+            percentage: percent,
+            subtitle: detailText,
+            semantic: semantics
+        )
+        let item = NSMenuItem()
+        item.view = view
+        menu.addItem(item)
+    }
+
     // MARK: - Formatting
 
     private func formatReset(_ isoDate: String?) -> String {
-        guard let isoDate, !isoDate.isEmpty else { return "" }
+        guard let date = parseISO8601(isoDate) else { return "" }
+        return formatResetDate(date)
+    }
+
+    private func formatCodexUpdate(_ isoDate: String?) -> String {
+        guard let date = parseISO8601(isoDate) else {
+            return "Local OMX metrics"
+        }
+
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 {
+            return "Updated just now"
+        }
+        if seconds < 3600 {
+            return "Updated \(seconds / 60)m ago"
+        }
+        if seconds < 86_400 {
+            return "Updated \(seconds / 3600)h ago"
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMdd HH:mm"
+        return "Updated \(formatter.string(from: date))"
+    }
+
+    private func formatCodexReset(_ unixSeconds: Double?, fallbackActivity: String?) -> String {
+        guard let unixSeconds else {
+            return formatCodexUpdate(fallbackActivity)
+        }
+
+        return formatResetDate(Date(timeIntervalSince1970: unixSeconds))
+    }
+
+    private func parseISO8601(_ isoDate: String?) -> Date? {
+        guard let isoDate, !isoDate.isEmpty else { return nil }
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: isoDate) ?? ISO8601DateFormatter().date(from: isoDate) else {
-            return ""
-        }
+        return formatter.date(from: isoDate) ?? ISO8601DateFormatter().date(from: isoDate)
+    }
 
+    private func formatResetDate(_ date: Date) -> String {
         let now = Date()
         if date <= now {
             return "Resetting..."
@@ -144,7 +220,7 @@ class MenuBuilder {
         let h = diff.hour ?? 0
         let m = diff.minute ?? 0
 
-        var countdown: String
+        let countdown: String
         if d > 0 {
             countdown = "\(d)d \(h)h"
         } else if h > 0 {
@@ -153,9 +229,9 @@ class MenuBuilder {
             countdown = "\(m)m"
         }
 
-        let df = DateFormatter()
-        df.dateFormat = "MMdd HH:mm"
-        return "Resets in \(countdown) (\(df.string(from: date)))"
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMdd HH:mm"
+        return "Resets in \(countdown) (\(formatter.string(from: date)))"
     }
 
     private func formatInterval(_ seconds: Int) -> String {

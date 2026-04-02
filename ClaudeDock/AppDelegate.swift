@@ -17,23 +17,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         menuBuilder = MenuBuilder(currentInterval: config.refreshInterval)
         menuBuilder.delegate = self
 
-        // Status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "--"
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
 
-        // Set up a persistent menu with delegate for dynamic rebuilds on open
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
 
-        // Initial fetch
         Task { await refresh() }
-
-        // Timer
         startTimer()
 
-        // Sleep/wake
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(didWake),
@@ -53,19 +47,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     }
 
     private func updateMenuBarTitle(_ result: FetchResult) {
-        guard let limits = result.limits, let fiveHour = limits.five_hour else {
-            if result.error != nil {
-                setMenuBarText("!", color: .systemRed)
-            } else {
-                setMenuBarText("--", color: .white)
-            }
+        let claudeUsed = result.claudeLimits?.five_hour.map { clamp($0.utilization) }
+        let codexUsed = result.codexMetrics?.five_hour_limit_pct.map(clamp)
+
+        if claudeUsed != nil || codexUsed != nil {
+            let claudeText = claudeUsed.map { String(format: "%.0f%%", $0) } ?? "--"
+            let codexText = codexUsed.map { String(format: "%.0f%%", $0) } ?? "--"
+            let usage = max(claudeUsed ?? 0, codexUsed ?? 0)
+            setMenuBarText("\(claudeText) | \(codexText)", color: colorForUsage(usage))
+        } else if result.error != nil {
+            setMenuBarText("!", color: .systemRed)
+        } else {
+            setMenuBarText("--", color: .white)
+        }
+
+        guard let fiveHour = result.claudeLimits?.five_hour else {
             return
         }
 
-        let clamped = min(100, max(0, fiveHour.utilization))
-        setMenuBarText(String(format: "%.0f%%", clamped), color: colorForPercent(clamped))
-
-        // If resets_at is in the past, trigger one refresh (guarded to prevent loop)
         if let resetsAt = fiveHour.resets_at, !hasTriggeredResetRefresh {
             let formatter = ISO8601DateFormatter()
             if let date = formatter.date(from: resetsAt), date <= Date() {
@@ -75,7 +74,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         } else if let resetsAt = fiveHour.resets_at {
             let formatter = ISO8601DateFormatter()
             if let date = formatter.date(from: resetsAt), date > Date() {
-                hasTriggeredResetRefresh = false // Reset guard when resets_at is in the future
+                hasTriggeredResetRefresh = false
             }
         }
     }
@@ -83,7 +82,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     // MARK: - NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        // Rebuild menu items just before the dropdown opens for fresh countdowns
         menu.removeAllItems()
         guard let result = lastResult else {
             let item = NSMenuItem(title: "Loading...", action: nil, keyEquivalent: "")
@@ -92,7 +90,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             return
         }
         let built = menuBuilder.buildMenu(from: result)
-        // Move items from built menu to the actual menu
         while built.items.count > 0 {
             let item = built.items[0]
             built.removeItem(item)
@@ -108,10 +105,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         statusItem.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
 
-    private func colorForPercent(_ pct: Double) -> NSColor {
+    private func colorForUsage(_ pct: Double) -> NSColor {
         if pct > 80 { return .systemRed }
         if pct > 50 { return .systemYellow }
         return .systemGreen
+    }
+
+    private func clamp(_ value: Double) -> Double {
+        min(100, max(0, value))
     }
 
     // MARK: - Timer
@@ -136,7 +137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         Task { await refresh() }
     }
 
-    @MainActor @objc func changeInterval(_ sender: NSMenuItem) {
+    @objc func changeInterval(_ sender: NSMenuItem) {
         config.refreshInterval = sender.tag
         usageService.saveConfig(config)
         menuBuilder.updateInterval(sender.tag)

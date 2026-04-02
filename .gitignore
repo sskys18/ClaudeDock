@@ -17,3 +17,7 @@ DerivedData/
 
 # Docs (contain auth/API details)
 docs/
+.omx/
+.codex/
+.claude/
+AGENTS.md
