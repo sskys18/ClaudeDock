@@ -28,20 +28,19 @@ Example:
 - no `A` / `C` prefixes
 
 ### Dropdown menu
-The dropdown has two sections.
+The dropdown is a compact two-column dashboard:
 
-#### Claude
-- 5-Hour Limit
-- 7-Day Limit
-- 7-Day Sonnet
-- Plan
+| Limit | Claude | Codex |
+|---|---:|---:|
+| 5H | % | % |
+| 7D | `% (sonnet%)` | % |
 
-#### Codex
-- 5-Hour Limit
-- Weekly Limit
-- Plan
-
-Both Claude and Codex rows show reset timing when available.
+Notes:
+- Claude and Codex are shown side by side as columns
+- each cell shows a main percentage plus a small subtitle
+- Claude subtitles show reset timing
+- Codex subtitles show reset timing when available, otherwise last observed update timing
+- there are no progress bars
 
 The menu also includes:
 - `↻ Refresh`
@@ -71,6 +70,19 @@ The app reads Codex quota from:
 
 This fallback exists because OMX metrics can sometimes show `0/0` even when real Codex quota data is available in recent rollout files.
 
+### Codex update time behavior
+Codex is designed to look close to Claude in the menu, but the data source is different:
+
+- **Claude** comes from a live API fetch
+- **Codex** comes from local Codex/OMX session/runtime files
+
+Because of that:
+- when rollout data includes reset timestamps, Codex cells show reset timing like Claude
+- when reset timestamps are missing, Codex cells fall back to last observed update timing
+- the footer shows `Last refreshed: HH:MM:SS`
+
+This is the main reason Codex can still behave slightly differently from Claude even though the menu layout is intentionally similar.
+
 ## Launch behavior
 
 ClaudeDock is installed as a **user LaunchAgent**, not a system daemon.
@@ -89,7 +101,10 @@ The LaunchAgent sets:
 - `CODEX_HOME=<repo>/.codex`
 - `CLAUDEDOCK_WORKSPACE_ROOT=<repo root>`
 
-This lets the installed binary continue reading the repository-local `.codex/` and `.omx/` state after login.
+The app prefers the newest usable Codex quota event and currently scans:
+- home `~/.codex/sessions`
+- repo-local `.codex/sessions`
+- `CODEX_HOME/sessions`
 
 ## Install / update
 
@@ -151,9 +166,11 @@ This is separate from ClaudeDock itself, but kept in sync by the installer.
 ## Behavior notes
 - Claude values are shown as **used** percentages.
 - Codex values are also shown as **used** percentages.
-- Codex rows now match Claude more closely by showing reset timing when available.
+- Claude `7D` includes Sonnet usage in parentheses.
+- The menu is intentionally compact and card-like, with a solid macOS-style background.
+- Each percentage is colored independently by its own value.
 - The app refreshes both Claude and Codex when `Refresh` is clicked.
-- The old `Using cached Claude data` banner has been removed.
+- The footer shows the last refresh time of the app UI.
 
 ## Verification commands
 
@@ -176,4 +193,4 @@ launchctl print gui/$(id -u)/com.sskys.ClaudeDock
 ```
 
 ## Current limitation
-Codex values still depend on local Codex session/runtime artifacts existing. If there is no usable recent local Codex session data, Codex quota can still be unavailable.
+Codex still depends on local Codex session/runtime artifacts existing. If there is no usable recent local Codex session data yet, Codex quota can still be unavailable until a local session writes a valid quota event.

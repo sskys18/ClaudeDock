@@ -1,78 +1,102 @@
 import Cocoa
 
-class UsageItemView: NSView {
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let percentLabel = NSTextField(labelWithString: "")
-    private let subtitleLabel = NSTextField(labelWithString: "")
-    private let progressBar = NSView()
-    private let progressTrack = NSView()
+class UsageSummaryView: NSView {
+    struct MetricCell {
+        let value: String
+        let subtitle: String
+        let color: NSColor
+    }
 
-    private let percentage: Double
-    private let semantic: PercentageSemantic
+    struct Row {
+        let label: String
+        let claude: MetricCell
+        let codex: MetricCell
+    }
 
-    static let viewWidth: CGFloat = 196
-    static let viewHeight: CGFloat = 56
+    static let viewWidth: CGFloat = 252
+    static let headerHeight: CGFloat = 24
+    static let rowHeight: CGFloat = 40
+    static let footerHeight: CGFloat = 22
+    static let topPadding: CGFloat = 12
+    static let bottomPadding: CGFloat = 10
 
-    init(title: String, percentage: Double, subtitle: String, semantic: PercentageSemantic) {
-        self.percentage = min(100, max(0, percentage))
-        self.semantic = semantic
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.viewWidth, height: Self.viewHeight))
-        setupViews(title: title, subtitle: subtitle)
+    private let rows: [Row]
+    private let footerText: String
+
+    init(rows: [Row], footerText: String) {
+        self.rows = rows
+        self.footerText = footerText
+        let height = Self.topPadding + Self.headerHeight + CGFloat(rows.count) * Self.rowHeight + Self.footerHeight + Self.bottomPadding
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.viewWidth, height: height))
+        setupViews()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) not implemented")
     }
 
-    private func setupViews(title: String, subtitle: String) {
-        let padding: CGFloat = 16
-        let barHeight: CGFloat = 6
-        let barY: CGFloat = 18
-        let barWidth = Self.viewWidth - padding * 2
+    private func setupViews() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.cornerRadius = 8
 
-        titleLabel.stringValue = title
-        titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        titleLabel.textColor = .secondaryLabelColor
-        titleLabel.frame = NSRect(x: padding, y: Self.viewHeight - 20, width: barWidth - 40, height: 14)
-        addSubview(titleLabel)
+        let labelX: CGFloat = 16
+        let labelWidth: CGFloat = 68
+        let columnWidth: CGFloat = 72
+        let claudeX = labelX + labelWidth
+        let codexX = claudeX + columnWidth
+        let headerY = bounds.height - Self.topPadding - 16
 
-        percentLabel.stringValue = String(format: "%.0f%%", percentage)
-        percentLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        percentLabel.textColor = colorForPercent(percentage)
-        percentLabel.alignment = .right
-        percentLabel.frame = NSRect(x: Self.viewWidth - padding - 40, y: Self.viewHeight - 20, width: 40, height: 14)
-        addSubview(percentLabel)
+        addText("", x: labelX, y: headerY, width: labelWidth, bold: true, color: .secondaryLabelColor)
+        addText("Claude", x: claudeX, y: headerY, width: columnWidth, bold: true, color: .secondaryLabelColor, align: .right)
+        addText("Codex", x: codexX, y: headerY, width: columnWidth, bold: true, color: .secondaryLabelColor, align: .right)
 
-        progressTrack.wantsLayer = true
-        progressTrack.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
-        progressTrack.layer?.cornerRadius = barHeight / 2
-        progressTrack.frame = NSRect(x: padding, y: barY, width: barWidth, height: barHeight)
-        addSubview(progressTrack)
+        addDivider(y: bounds.height - Self.topPadding - Self.headerHeight)
 
-        let fillWidth = barWidth * CGFloat(percentage / 100)
-        progressBar.wantsLayer = true
-        progressBar.layer?.backgroundColor = colorForPercent(percentage).cgColor
-        progressBar.layer?.cornerRadius = barHeight / 2
-        progressBar.frame = NSRect(x: padding, y: barY, width: fillWidth, height: barHeight)
-        addSubview(progressBar)
+        for (index, row) in rows.enumerated() {
+            let rowTop = bounds.height - Self.topPadding - Self.headerHeight - CGFloat(index) * Self.rowHeight
+            let valueY = rowTop - 20
+            let subtitleY = rowTop - 35
 
-        subtitleLabel.stringValue = subtitle
-        subtitleLabel.font = .systemFont(ofSize: 10)
-        subtitleLabel.textColor = .tertiaryLabelColor
-        subtitleLabel.frame = NSRect(x: padding, y: 2, width: barWidth, height: 13)
-        addSubview(subtitleLabel)
+            addText(row.label, x: labelX, y: valueY, width: labelWidth, bold: true)
+            addText(row.claude.value, x: claudeX, y: valueY, width: columnWidth, bold: true, color: row.claude.color, align: .right)
+            addText(row.codex.value, x: codexX, y: valueY, width: columnWidth, bold: true, color: row.codex.color, align: .right)
+
+            addText(row.claude.subtitle, x: claudeX, y: subtitleY, width: columnWidth, size: 9, color: .tertiaryLabelColor, align: .right)
+            addText(row.codex.subtitle, x: codexX, y: subtitleY, width: columnWidth, size: 9, color: .tertiaryLabelColor, align: .right)
+
+            if index < rows.count - 1 {
+                addDivider(y: rowTop - Self.rowHeight + 3)
+            }
+        }
+
+        addDivider(y: Self.footerHeight + Self.bottomPadding)
+        addText(footerText, x: 16, y: 8, width: bounds.width - 32, size: 11, color: .tertiaryLabelColor)
     }
 
-    private func colorForPercent(_ pct: Double) -> NSColor {
-        switch semantic {
-        case .utilization:
-            if pct > 80 { return .systemRed }
-            if pct > 50 { return .systemYellow }
-            return .systemGreen
-        case .remaining:
-            if pct < 20 { return .systemRed }
-            if pct < 50 { return .systemYellow }
-            return .systemGreen
-        }
+    private func addDivider(y: CGFloat) {
+        let divider = NSView(frame: NSRect(x: 12, y: y, width: bounds.width - 24, height: 1))
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        addSubview(divider)
+    }
+
+    private func addText(
+        _ text: String,
+        x: CGFloat,
+        y: CGFloat,
+        width: CGFloat,
+        bold: Bool = false,
+        size: CGFloat = 12,
+        color: NSColor = .labelColor,
+        align: NSTextAlignment = .left
+    ) {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular)
+        label.textColor = color
+        label.alignment = align
+        label.lineBreakMode = .byTruncatingTail
+        label.frame = NSRect(x: x, y: y, width: width, height: max(14, size + 3))
+        addSubview(label)
     }
 }

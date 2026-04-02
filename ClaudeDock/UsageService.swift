@@ -34,27 +34,32 @@ class UsageService {
     // MARK: - Fetch
 
     func fetchUsage() async -> FetchResult {
-        let codexMetrics = loadCodexMetrics()
+        let refreshedAt = Date()
+        let cached = loadCache()
+        let codexMetrics = loadCodexMetrics() ?? cached?.codexMetrics
+        cacheCodexMetricsIfNeeded(codexMetrics, existingCache: cached)
 
         guard !isFetching else {
             return FetchResult(
-                claudeLimits: loadCache()?.data,
+                claudeLimits: cached?.data,
                 codexMetrics: codexMetrics,
                 stale: true,
-                error: nil
+                error: nil,
+                refreshedAt: refreshedAt
             )
         }
         isFetching = true
         defer { isFetching = false }
 
-        if let cached = loadCache() {
+        if let cached {
             let age = Date().timeIntervalSince1970 - cached.timestamp / 1000
             if cached.backoff && age < backoffSeconds {
                 return FetchResult(
                     claudeLimits: cached.data,
                     codexMetrics: codexMetrics,
                     stale: true,
-                    error: .rateLimited
+                    error: .rateLimited,
+                    refreshedAt: refreshedAt
                 )
             }
         }
@@ -64,7 +69,8 @@ class UsageService {
                 claudeLimits: nil,
                 codexMetrics: codexMetrics,
                 stale: false,
-                error: .noKey
+                error: .noKey,
+                refreshedAt: refreshedAt
             )
         }
 
@@ -81,12 +87,17 @@ class UsageService {
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                return fallbackToCache(error: .apiError, codexMetrics: codexMetrics)
+                return fallbackToCache(error: .apiError, codexMetrics: codexMetrics, refreshedAt: refreshedAt)
             }
 
             if httpResponse.statusCode == 429 {
-                saveCache(CacheEntry(data: loadCache()?.data, timestamp: Date().timeIntervalSince1970 * 1000, backoff: true))
-                return fallbackToCache(error: .rateLimited, codexMetrics: codexMetrics)
+                saveCache(CacheEntry(
+                    data: cached?.data,
+                    codexMetrics: codexMetrics,
+                    timestamp: Date().timeIntervalSince1970 * 1000,
+                    backoff: true
+                ))
+                return fallbackToCache(error: .rateLimited, codexMetrics: codexMetrics, refreshedAt: refreshedAt)
             }
 
             guard httpResponse.statusCode == 200 else {
@@ -97,20 +108,27 @@ class UsageService {
                     claudeLimits: nil,
                     codexMetrics: codexMetrics,
                     stale: false,
-                    error: .apiError
+                    error: .apiError,
+                    refreshedAt: refreshedAt
                 )
             }
 
             let limits = try JSONDecoder().decode(UsageLimits.self, from: data)
-            saveCache(CacheEntry(data: limits, timestamp: Date().timeIntervalSince1970 * 1000, backoff: false))
+            saveCache(CacheEntry(
+                data: limits,
+                codexMetrics: codexMetrics,
+                timestamp: Date().timeIntervalSince1970 * 1000,
+                backoff: false
+            ))
             return FetchResult(
                 claudeLimits: limits,
                 codexMetrics: codexMetrics,
                 stale: false,
-                error: nil
+                error: nil,
+                refreshedAt: refreshedAt
             )
         } catch {
-            return fallbackToCache(error: .apiError, codexMetrics: codexMetrics)
+            return fallbackToCache(error: .apiError, codexMetrics: codexMetrics, refreshedAt: refreshedAt)
         }
     }
 
@@ -137,21 +155,36 @@ class UsageService {
         }
     }
 
-    private func fallbackToCache(error: FetchError, codexMetrics: CodexMetrics?) -> FetchResult {
-        if let cached = loadCache(), cached.data != nil {
+    private func fallbackToCache(error: FetchError, codexMetrics: CodexMetrics?, refreshedAt: Date) -> FetchResult {
+        if let cached = loadCache(), cached.data != nil || cached.codexMetrics != nil {
             return FetchResult(
                 claudeLimits: cached.data,
-                codexMetrics: codexMetrics,
+                codexMetrics: codexMetrics ?? cached.codexMetrics,
                 stale: true,
-                error: nil
+                error: nil,
+                refreshedAt: refreshedAt
             )
         }
         return FetchResult(
             claudeLimits: nil,
             codexMetrics: codexMetrics,
             stale: false,
-            error: error
+            error: error,
+            refreshedAt: refreshedAt
         )
+    }
+
+    private func cacheCodexMetricsIfNeeded(_ codexMetrics: CodexMetrics?, existingCache: CacheEntry?) {
+        guard let codexMetrics, existingCache?.codexMetrics != codexMetrics else {
+            return
+        }
+
+        saveCache(CacheEntry(
+            data: existingCache?.data,
+            codexMetrics: codexMetrics,
+            timestamp: existingCache?.timestamp ?? Date().timeIntervalSince1970 * 1000,
+            backoff: existingCache?.backoff ?? false
+        ))
     }
 
     // MARK: - Codex metrics
@@ -181,31 +214,40 @@ class UsageService {
     }
 
     private func loadCodexMetricsFromRollouts() -> CodexMetrics? {
-        let sessionsDir = codexSessionsRoot()
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessionsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
+        var newestMetrics: CodexMetrics?
+        var newestDate: Date?
 
-        let rolloutFiles = enumerator
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix("rollout-") }
-            .sorted { lhs, rhs in
-                let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return lhsDate > rhsDate
+        for sessionsDir in codexSessionsRoots() {
+            guard let enumerator = FileManager.default.enumerator(
+                at: sessionsDir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                continue
             }
 
-        for rolloutFile in rolloutFiles {
-            if let metrics = parseCodexMetrics(from: rolloutFile) {
-                return metrics
+            let rolloutFiles = enumerator
+                .compactMap { $0 as? URL }
+                .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix("rollout-") }
+                .sorted { lhs, rhs in
+                    let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    return lhsDate > rhsDate
+                }
+
+            for rolloutFile in rolloutFiles {
+                guard let metrics = parseCodexMetrics(from: rolloutFile) else {
+                    continue
+                }
+                let metricsDate = parseISO8601(metrics.last_activity) ?? .distantPast
+                if newestDate == nil || metricsDate > newestDate! {
+                    newestDate = metricsDate
+                    newestMetrics = metrics
+                }
             }
         }
 
-        return nil
+        return newestMetrics
     }
 
     private func parseCodexMetrics(from rolloutFile: URL) -> CodexMetrics? {
@@ -268,13 +310,41 @@ class UsageService {
         }
     }
 
-    private func codexSessionsRoot() -> URL {
+    private func codexSessionsRoots() -> [URL] {
+        var roots: [URL] = []
+
         if let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"], !codexHome.isEmpty {
-            return URL(fileURLWithPath: codexHome).appendingPathComponent("sessions", isDirectory: true)
+            roots.append(URL(fileURLWithPath: codexHome).appendingPathComponent("sessions", isDirectory: true))
         }
 
-        return workspaceRoot().appendingPathComponent(".codex", isDirectory: true)
-            .appendingPathComponent("sessions", isDirectory: true)
+        roots.append(
+            workspaceRoot()
+                .appendingPathComponent(".codex", isDirectory: true)
+                .appendingPathComponent("sessions", isDirectory: true)
+        )
+
+        roots.append(
+            URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent(".codex", isDirectory: true)
+                .appendingPathComponent("sessions", isDirectory: true)
+        )
+
+        var unique: [URL] = []
+        var seen = Set<String>()
+        for root in roots {
+            let path = root.standardizedFileURL.path
+            if seen.insert(path).inserted {
+                unique.append(root)
+            }
+        }
+        return unique
+    }
+
+    private func parseISO8601(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func workspaceRoot() -> URL {

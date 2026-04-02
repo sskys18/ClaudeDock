@@ -16,7 +16,7 @@ struct UsageLimits: Codable {
     let seven_day_sonnet: RateLimitInfo?
 }
 
-struct CodexMetrics: Codable {
+struct CodexMetrics: Codable, Equatable {
     let last_activity: String?
     let session_total_tokens: Double?
     let five_hour_limit_pct: Double?
@@ -34,6 +34,7 @@ struct CodexMetrics: Codable {
 
 struct CacheEntry: Codable {
     let data: UsageLimits?
+    let codexMetrics: CodexMetrics?
     let timestamp: Double
     let backoff: Bool
 }
@@ -49,6 +50,7 @@ struct FetchResult {
     let codexMetrics: CodexMetrics?
     let stale: Bool
     let error: FetchError?
+    let refreshedAt: Date
 }
 
 struct AppConfig: Codable {
