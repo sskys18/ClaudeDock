@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 enum KeychainReader {
     private static let accessTokenPattern = try! NSRegularExpression(
@@ -22,29 +21,23 @@ enum KeychainReader {
     }
 
     private static func readFromKeychain() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        proc.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return nil }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let raw = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty else { return nil }
 
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
-        }
-
-        if let str = String(data: data, encoding: .utf8) {
-            if let token = extractToken(from: str) {
-                return token
-            }
-            if let hexDecoded = hexDecode(str.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                if let token = extractToken(from: hexDecoded) {
-                    return token
-                }
-            }
-        }
+        if let token = extractToken(from: raw) { return token }
+        if let hexDecoded = hexDecode(raw),
+           let token = extractToken(from: hexDecoded) { return token }
         return nil
     }
 

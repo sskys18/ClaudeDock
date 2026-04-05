@@ -13,7 +13,6 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("Cocoa"),
-                .linkedFramework("Security"),
             ]
         ),
     ]
