@@ -7,13 +7,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     private var refreshTimer: Timer?
     private var config: AppConfig!
     private var lastResult: FetchResult?
-    private var hasTriggeredResetRefresh = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         usageService = UsageService()
         config = usageService.loadConfig()
+        usageService.saveConfig(config)
         menuBuilder = MenuBuilder(currentInterval: config.refreshInterval)
         menuBuilder.delegate = self
 
@@ -29,17 +29,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         startTimer()
 
         NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(didWake),
-            name: NSWorkspace.didWakeNotification,
-            object: nil
-        )
+            self, selector: #selector(didWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
     }
 
-    // MARK: - Refresh
-
     private func refresh() async {
-        let result = await usageService.fetchUsage()
+        let result = await usageService.fetchUsage(config: config)
         await MainActor.run {
             lastResult = result
             updateMenuBarTitle(result)
@@ -47,39 +42,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     }
 
     private func updateMenuBarTitle(_ result: FetchResult) {
-        let claudeUsed = result.claudeLimits?.five_hour.map { clamp($0.utilization) }
-        let codexUsed = result.codexMetrics?.five_hour_limit_pct.map(clamp)
+        let activeUsage = result.accounts.first(where: { $0.account.id == result.activeAccountId })
+        let claude: Double? = activeUsage?.limits?.five_hour.map { clamp($0.utilization) }
+        let codex: Double? = result.codexMetrics?.five_hour_limit_pct.map { clamp($0) }
 
-        if claudeUsed != nil || codexUsed != nil {
-            let claudeText = claudeUsed.map { String(format: "%.0f%%", $0) } ?? "--"
-            let codexText = codexUsed.map { String(format: "%.0f%%", $0) } ?? "--"
-            let usage = max(claudeUsed ?? 0, codexUsed ?? 0)
-            setMenuBarText("\(claudeText) | \(codexText)", color: colorForUsage(usage))
-        } else if result.error != nil {
-            setMenuBarText("!", color: .systemRed)
+        if claude != nil || codex != nil {
+            let c = claude.map { String(format: "%.0f%%", $0) } ?? "--"
+            let x = codex.map { String(format: "%.0f%%", $0) } ?? "--"
+            let usage = max(claude ?? 0, codex ?? 0)
+            setBar("\(c) | \(x)", color: colorFor(usage))
+        } else if !result.accounts.isEmpty {
+            setBar("!", color: .systemRed)
         } else {
-            setMenuBarText("--", color: .white)
-        }
-
-        guard let fiveHour = result.claudeLimits?.five_hour else {
-            return
-        }
-
-        if let resetsAt = fiveHour.resets_at, !hasTriggeredResetRefresh {
-            let formatter = ISO8601DateFormatter()
-            if let date = formatter.date(from: resetsAt), date <= Date() {
-                hasTriggeredResetRefresh = true
-                Task { await refresh() }
-            }
-        } else if let resetsAt = fiveHour.resets_at {
-            let formatter = ISO8601DateFormatter()
-            if let date = formatter.date(from: resetsAt), date > Date() {
-                hasTriggeredResetRefresh = false
-            }
+            setBar("--", color: .white)
         }
     }
-
-    // MARK: - NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -97,7 +74,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         }
     }
 
-    private func setMenuBarText(_ text: String, color: NSColor) {
+    private func setBar(_ text: String, color: NSColor) {
         let attrs: [NSAttributedString.Key: Any] = [
             .foregroundColor: color,
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
@@ -105,42 +82,121 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         statusItem.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
 
-    private func colorForUsage(_ pct: Double) -> NSColor {
+    private func colorFor(_ pct: Double) -> NSColor {
         if pct > 80 { return .systemRed }
         if pct > 50 { return .systemYellow }
         return .systemGreen
     }
 
-    private func clamp(_ value: Double) -> Double {
-        min(100, max(0, value))
-    }
-
-    // MARK: - Timer
+    private func clamp(_ v: Double) -> Double { min(100, max(0, v)) }
 
     private func startTimer() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(
-            withTimeInterval: TimeInterval(config.refreshInterval),
-            repeats: true
+            withTimeInterval: TimeInterval(config.refreshInterval), repeats: true
         ) { [weak self] _ in
             Task { await self?.refresh() }
         }
     }
 
-    @objc private func didWake() {
-        Task { await refresh() }
-    }
+    @objc private func didWake() { Task { await refresh() } }
 
     // MARK: - MenuBuilderDelegate
 
-    @objc func refreshNow() {
-        Task { await refresh() }
-    }
+    @objc func refreshNow() { Task { await refresh() } }
 
     @objc func changeInterval(_ sender: NSMenuItem) {
         config.refreshInterval = sender.tag
         usageService.saveConfig(config)
         menuBuilder.updateInterval(sender.tag)
         startTimer()
+    }
+
+    @objc func saveCurrentAs() {
+        let alert = NSAlert()
+        alert.messageText = "Save current Claude login as…"
+        alert.informativeText = "Enter a label (e.g. Work, Personal)."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        tf.placeholderString = "Label"
+        alert.accessoryView = tf
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let label = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return }
+
+        do {
+            try AccountSwitcher.saveCurrentAs(label: label, config: &config)
+            usageService.saveConfig(config)
+            Task { await refresh() }
+        } catch {
+            showError(error.localizedDescription, detail: "Could not save login.")
+        }
+    }
+
+    @objc func switchTo(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        do {
+            try AccountSwitcher.switchTo(accountId: id, config: &config)
+            usageService.saveConfig(config)
+            notifyRestartNeeded()
+            Task { await refresh() }
+        } catch {
+            showError(error.localizedDescription, detail: "Switch failed.")
+        }
+    }
+
+    @objc func renameAccount(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let ref = config.accounts.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename \(ref.label)"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        tf.stringValue = ref.label
+        alert.accessoryView = tf
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newLabel = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try AccountSwitcher.rename(accountId: id, to: newLabel, config: &config)
+            usageService.saveConfig(config)
+            Task { await refresh() }
+        } catch {
+            showError(error.localizedDescription, detail: "Rename failed.")
+        }
+    }
+
+    @objc func deleteAccount(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let ref = config.accounts.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete saved login \(ref.label)?"
+        alert.informativeText = "This removes ClaudeDock's stored credentials for this account. Claude Code's current login is not affected."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try AccountSwitcher.delete(accountId: id, config: &config)
+            usageService.saveConfig(config)
+            Task { await refresh() }
+        } catch {
+            showError(error.localizedDescription, detail: "Delete failed.")
+        }
+    }
+
+    private func notifyRestartNeeded() {
+        let alert = NSAlert()
+        alert.messageText = "Active login switched"
+        alert.informativeText = "Restart any running `claude` CLI to pick up the new identity."
+        alert.runModal()
+    }
+
+    private func showError(_ message: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = detail
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }

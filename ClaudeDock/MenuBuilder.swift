@@ -1,5 +1,14 @@
 import Cocoa
 
+@objc protocol MenuBuilderDelegate: AnyObject {
+    func refreshNow()
+    func changeInterval(_ sender: NSMenuItem)
+    func saveCurrentAs()
+    func switchTo(_ sender: NSMenuItem)
+    func renameAccount(_ sender: NSMenuItem)
+    func deleteAccount(_ sender: NSMenuItem)
+}
+
 class MenuBuilder {
     weak var delegate: MenuBuilderDelegate?
     private var currentInterval: Int
@@ -8,201 +17,151 @@ class MenuBuilder {
         self.currentInterval = currentInterval
     }
 
+    func updateInterval(_ seconds: Int) { currentInterval = seconds }
+
     func buildMenu(from result: FetchResult) -> NSMenu {
         let menu = NSMenu()
 
-        let summaryItem = NSMenuItem()
-        summaryItem.view = UsageSummaryView(
-            rows: buildSummaryRows(from: result),
-            footerText: buildFooterText(from: result)
-        )
-        menu.addItem(summaryItem)
+        if result.accounts.isEmpty {
+            let none = NSMenuItem(title: "No accounts saved. Log in to Claude Code, then use Save below.",
+                                  action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        } else {
+            for usage in result.accounts {
+                let isActive = (result.activeAccountId == usage.account.id)
+                menu.addItem(buildAccountRow(usage: usage, active: isActive))
+            }
+        }
+        if let codex = result.codexMetrics {
+            menu.addItem(buildCodexRow(codex: codex))
+        }
         menu.addItem(.separator())
 
-        if let errorItem = buildClaudeErrorItem(from: result) {
-            menu.addItem(errorItem)
-            menu.addItem(.separator())
+        let save = NSMenuItem(title: "Save current login as…",
+                              action: #selector(MenuBuilderDelegate.saveCurrentAs),
+                              keyEquivalent: "s")
+        save.target = delegate
+        menu.addItem(save)
+
+        if !result.accounts.isEmpty {
+            let switchItem = NSMenuItem(title: "Switch active login", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for usage in result.accounts {
+                let isActive = (result.activeAccountId == usage.account.id)
+                let s = NSMenuItem(
+                    title: usage.account.label + (isActive ? " (active)" : ""),
+                    action: #selector(MenuBuilderDelegate.switchTo(_:)),
+                    keyEquivalent: "")
+                s.target = delegate
+                s.representedObject = usage.account.id
+                if isActive { s.state = .on }
+                sub.addItem(s)
+            }
+            switchItem.submenu = sub
+            menu.addItem(switchItem)
+
+            let manage = NSMenuItem(title: "Manage accounts", action: nil, keyEquivalent: "")
+            let mSub = NSMenu()
+            for usage in result.accounts {
+                let per = NSMenuItem(title: usage.account.label, action: nil, keyEquivalent: "")
+                let perSub = NSMenu()
+                let ren = NSMenuItem(title: "Rename…",
+                    action: #selector(MenuBuilderDelegate.renameAccount(_:)),
+                    keyEquivalent: "")
+                ren.target = delegate
+                ren.representedObject = usage.account.id
+                perSub.addItem(ren)
+                let del = NSMenuItem(title: "Delete",
+                    action: #selector(MenuBuilderDelegate.deleteAccount(_:)),
+                    keyEquivalent: "")
+                del.target = delegate
+                del.representedObject = usage.account.id
+                perSub.addItem(del)
+                per.submenu = perSub
+                mSub.addItem(per)
+            }
+            manage.submenu = mSub
+            menu.addItem(manage)
         }
 
-        let refreshItem = NSMenuItem(title: "↻ Refresh", action: #selector(MenuBuilderDelegate.refreshNow), keyEquivalent: "r")
-        refreshItem.target = delegate
-        menu.addItem(refreshItem)
+        menu.addItem(.separator())
 
-        let autoRefreshItem = NSMenuItem(title: "Auto-refresh: \(formatInterval(currentInterval))", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
+        let refresh = NSMenuItem(title: "↻ Refresh",
+            action: #selector(MenuBuilderDelegate.refreshNow),
+            keyEquivalent: "r")
+        refresh.target = delegate
+        menu.addItem(refresh)
+
+        let autoRefresh = NSMenuItem(title: "Auto-refresh: \(formatInterval(currentInterval))",
+                                     action: nil, keyEquivalent: "")
+        let autoSub = NSMenu()
         for seconds in [15, 30, 60, 120, 300] {
-            let label = formatInterval(seconds)
-            let subItem = NSMenuItem(title: label, action: #selector(MenuBuilderDelegate.changeInterval(_:)), keyEquivalent: "")
+            let subItem = NSMenuItem(title: formatInterval(seconds),
+                action: #selector(MenuBuilderDelegate.changeInterval(_:)),
+                keyEquivalent: "")
             subItem.target = delegate
             subItem.tag = seconds
-            if seconds == currentInterval {
-                subItem.state = .on
-            }
-            submenu.addItem(subItem)
+            if seconds == currentInterval { subItem.state = .on }
+            autoSub.addItem(subItem)
         }
-        autoRefreshItem.submenu = submenu
-        menu.addItem(autoRefreshItem)
+        autoRefresh.submenu = autoSub
+        menu.addItem(autoRefresh)
 
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit ClaudeDock",
+            action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
-        let quitItem = NSMenuItem(title: "Quit ClaudeDock", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quitItem)
+        let footer = NSMenuItem(title: footerText(result), action: nil, keyEquivalent: "")
+        footer.isEnabled = false
+        menu.addItem(footer)
 
         return menu
     }
 
-    func updateInterval(_ seconds: Int) {
-        currentInterval = seconds
-    }
-
-    private func buildSummaryRows(from result: FetchResult) -> [UsageSummaryView.Row] {
-        let claude = result.claudeLimits
-        let codex = result.codexMetrics
-
-        return [
-            .init(
-                label: "5H",
-                claude: .init(
-                    value: formatPercent(claude?.five_hour?.utilization),
-                    subtitle: formatReset(claude?.five_hour?.resets_at),
-                    color: colorForPercent(claude?.five_hour?.utilization)
-                ),
-                codex: .init(
-                    value: formatPercent(codex?.five_hour_limit_pct),
-                    subtitle: formatCodexReset(codex?.five_hour_resets_at, fallbackActivity: codex?.last_activity),
-                    color: colorForPercent(codex?.five_hour_limit_pct)
-                )
-            ),
-            .init(
-                label: "7D",
-                claude: .init(
-                    value: formatClaudeWeekly(weekly: claude?.seven_day?.utilization, sonnet: claude?.seven_day_sonnet?.utilization),
-                    subtitle: formatReset(claude?.seven_day?.resets_at),
-                    color: colorForPercent(claude?.seven_day?.utilization)
-                ),
-                codex: .init(
-                    value: formatPercent(codex?.weekly_limit_pct),
-                    subtitle: formatCodexReset(codex?.weekly_resets_at, fallbackActivity: codex?.last_activity),
-                    color: colorForPercent(codex?.weekly_limit_pct)
-                )
-            )
-        ]
-    }
-
-    private func buildFooterText(from result: FetchResult) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let refreshed = formatter.string(from: result.refreshedAt)
-        return "Last refreshed: \(refreshed)"
-    }
-
-    private func buildClaudeErrorItem(from result: FetchResult) -> NSMenuItem? {
-        guard result.claudeLimits == nil, let error = result.error else {
-            return nil
+    private func buildAccountRow(usage: AccountUsage, active: Bool) -> NSMenuItem {
+        let dot = active ? "●" : "○"
+        let title: String
+        if let err = usage.error, usage.limits == nil {
+            let reason: String
+            switch err {
+            case .noKey: reason = "no credentials"
+            case .needsReLogin: reason = "re-login required"
+            case .rateLimited: reason = "rate limited"
+            case .apiError: reason = "api error"
+            }
+            title = "\(dot) \(usage.account.label) · \(reason)"
+        } else {
+            let five = formatPercent(usage.limits?.five_hour?.utilization)
+            let week = formatPercent(usage.limits?.seven_day?.utilization)
+            let staleTag = usage.stale ? " (cached)" : ""
+            title = "\(dot) \(usage.account.label) · 5h \(five) · 7d \(week)\(staleTag)"
         }
-
-        let errorText: String
-        switch error {
-        case .noKey:
-            errorText = "No credentials found. Log in to Claude Code first."
-        case .apiError:
-            errorText = "Auth error — check Claude Code login"
-        case .rateLimited:
-            errorText = "Rate limited — using cached data"
-        }
-
-        let item = NSMenuItem(title: errorText, action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
     }
 
+    private func buildCodexRow(codex: CodexMetrics) -> NSMenuItem {
+        let five = formatPercent(codex.five_hour_limit_pct)
+        let week = formatPercent(codex.weekly_limit_pct)
+        let item = NSMenuItem(title: "  Codex · 5h \(five) · 7d \(week)",
+                              action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    private func footerText(_ result: FetchResult) -> String {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+        return "Last refreshed: \(f.string(from: result.refreshedAt))"
+    }
+
     private func formatPercent(_ value: Double?) -> String {
-        guard let value else { return "--" }
-        let clamped = min(100, max(0, value))
-        return String(format: "%.0f%%", clamped)
+        guard let v = value else { return "--" }
+        return String(format: "%.0f%%", min(100, max(0, v)))
     }
 
-    private func colorForPercent(_ value: Double?) -> NSColor {
-        guard let value else { return .secondaryLabelColor }
-        if value > 80 { return .systemRed }
-        if value > 50 { return .systemYellow }
-        return .systemGreen
+    private func formatInterval(_ s: Int) -> String {
+        s < 60 ? "\(s)s" : "\(s / 60)m"
     }
-
-    private func formatPlan(_ plan: String?) -> String {
-        guard let plan, !plan.isEmpty else { return "--" }
-        return plan.capitalized
-    }
-
-    private func formatClaudeWeekly(weekly: Double?, sonnet: Double?) -> String {
-        let weeklyText = formatPercent(weekly)
-        guard let sonnet else { return weeklyText }
-        return "\(weeklyText) (\(formatPercent(sonnet)))"
-    }
-
-    private func formatReset(_ isoDate: String?) -> String {
-        guard let date = parseISO8601(isoDate) else { return "--" }
-        return formatResetDate(date)
-    }
-
-    private func formatCodexUpdate(_ isoDate: String?) -> String {
-        guard let date = parseISO8601(isoDate) else {
-            return "--"
-        }
-
-        let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return "now" }
-        if seconds < 3600 { return "\(seconds / 60)m ago" }
-        if seconds < 86_400 { return "\(seconds / 3600)h ago" }
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMdd HH:mm"
-        return formatter.string(from: date)
-    }
-
-    private func formatCodexReset(_ unixSeconds: Double?, fallbackActivity: String?) -> String {
-        guard let unixSeconds else {
-            return formatCodexUpdate(fallbackActivity)
-        }
-
-        return formatResetDate(Date(timeIntervalSince1970: unixSeconds))
-    }
-
-    private func parseISO8601(_ isoDate: String?) -> Date? {
-        guard let isoDate, !isoDate.isEmpty else { return nil }
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: isoDate) ?? ISO8601DateFormatter().date(from: isoDate)
-    }
-
-    private func formatResetDate(_ date: Date) -> String {
-        let now = Date()
-        if date <= now {
-            return "Resetting"
-        }
-
-        let diff = Calendar.current.dateComponents([.day, .hour, .minute], from: now, to: date)
-        let d = diff.day ?? 0
-        let h = diff.hour ?? 0
-        let m = diff.minute ?? 0
-
-        if d > 0 {
-            return "\(d)d \(h)h"
-        } else if h > 0 {
-            return "\(h)h \(m)m"
-        } else {
-            return "\(m)m"
-        }
-    }
-
-    private func formatInterval(_ seconds: Int) -> String {
-        if seconds < 60 { return "\(seconds)s" }
-        return "\(seconds / 60)m"
-    }
-}
-
-@objc protocol MenuBuilderDelegate: AnyObject {
-    func refreshNow()
-    func changeInterval(_ sender: NSMenuItem)
 }
