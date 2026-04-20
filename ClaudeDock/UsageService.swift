@@ -25,110 +25,143 @@ class UsageService {
     }
 
     func saveConfig(_ config: AppConfig) {
+        ensureCacheDir()
         if let data = try? JSONEncoder().encode(config) {
-            ensureCacheDir()
-            try? data.write(to: URL(fileURLWithPath: configPath))
+            try? data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
         }
     }
 
     // MARK: - Fetch
 
-    func fetchUsage() async -> FetchResult {
+    func fetchUsage(config: AppConfig) async -> FetchResult {
         let refreshedAt = Date()
-        let cached = loadCache()
-        let codexMetrics = loadCodexMetrics() ?? cached?.codexMetrics
-        cacheCodexMetricsIfNeeded(codexMetrics, existingCache: cached)
+        var cached = loadCache() ?? CacheEntry(
+            accounts: [:],
+            codexMetrics: nil,
+            timestamp: Date().timeIntervalSince1970 * 1000
+        )
+        let codexMetrics = loadCodexMetrics() ?? cached.codexMetrics
 
         guard !isFetching else {
-            return FetchResult(
-                claudeLimits: cached?.data,
-                codexMetrics: codexMetrics,
-                stale: true,
-                error: nil,
-                refreshedAt: refreshedAt
-            )
+            return buildStaleResult(config: config, cache: cached,
+                                    codex: codexMetrics, refreshedAt: refreshedAt)
         }
         isFetching = true
         defer { isFetching = false }
 
-        if let cached {
-            let age = Date().timeIntervalSince1970 - cached.timestamp / 1000
-            if cached.backoff && age < backoffSeconds {
-                return FetchResult(
-                    claudeLimits: cached.data,
-                    codexMetrics: codexMetrics,
-                    stale: true,
-                    error: .rateLimited,
-                    refreshedAt: refreshedAt
-                )
+        var usages: [AccountUsage] = []
+        for acct in config.accounts {
+            let usage = await fetchOne(account: acct, cache: cached.accounts[acct.id])
+            cached.accounts[acct.id] = PerAccountCache(
+                data: usage.limits ?? cached.accounts[acct.id]?.data,
+                timestamp: Date().timeIntervalSince1970 * 1000,
+                backoff: usage.error == .rateLimited,
+                error: usage.error
+            )
+            usages.append(usage)
+        }
+
+        cached.codexMetrics = codexMetrics
+        cached.timestamp = Date().timeIntervalSince1970 * 1000
+        saveCache(cached)
+
+        return FetchResult(
+            accounts: usages,
+            codexMetrics: codexMetrics,
+            refreshedAt: refreshedAt,
+            activeAccountId: config.activeAccountId
+        )
+    }
+
+    private func buildStaleResult(config: AppConfig, cache: CacheEntry,
+                                  codex: CodexMetrics?, refreshedAt: Date) -> FetchResult {
+        let accts = config.accounts.map { acct in
+            AccountUsage(
+                account: acct,
+                limits: cache.accounts[acct.id]?.data,
+                error: cache.accounts[acct.id]?.error,
+                stale: true
+            )
+        }
+        return FetchResult(
+            accounts: accts,
+            codexMetrics: codex,
+            refreshedAt: refreshedAt,
+            activeAccountId: config.activeAccountId
+        )
+    }
+
+    private func fetchOne(account: AccountRef, cache: PerAccountCache?) async -> AccountUsage {
+        if let c = cache, c.backoff {
+            let ageSec = Date().timeIntervalSince1970 - c.timestamp / 1000
+            if ageSec < backoffSeconds {
+                return AccountUsage(account: account, limits: c.data,
+                                    error: .rateLimited, stale: true)
             }
         }
 
-        guard let token = KeychainReader.getCredentials() else {
-            return FetchResult(
-                claudeLimits: nil,
-                codexMetrics: codexMetrics,
-                stale: false,
-                error: .noKey,
-                refreshedAt: refreshedAt
-            )
+        let blob: String
+        do {
+            blob = try AccountStore.loadBundle(label: account.label)
+        } catch {
+            return AccountUsage(account: account, limits: cache?.data,
+                                error: .noKey, stale: cache?.data != nil)
         }
+
+        var currentBlob = blob
+        if let parsed = ClaudeOAuthBlob.parse(blob),
+           let exp = parsed.expiresAt,
+           exp.timeIntervalSinceNow < 60 {
+            let result = await OAuthRefresher.refresh(blob: blob)
+            switch result {
+            case .success(let refreshed):
+                currentBlob = refreshed.rawBlob
+                try? AccountStore.saveBundle(label: account.label,
+                                             blob: refreshed.rawBlob,
+                                             overwrite: true)
+            case .failure:
+                return AccountUsage(account: account, limits: cache?.data,
+                                    error: .needsReLogin, stale: cache?.data != nil)
+            }
+        }
+
+        guard let parsed = ClaudeOAuthBlob.parse(currentBlob) else {
+            return AccountUsage(account: account, limits: cache?.data,
+                                error: .noKey, stale: cache?.data != nil)
+        }
+
+        var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(parsed.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("ClaudeDock/1.0.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.timeoutInterval = apiTimeout
 
         do {
-            var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
-            request.httpMethod = "GET"
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("ClaudeDock/1.0.0", forHTTPHeaderField: "User-Agent")
-            request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-            request.timeoutInterval = apiTimeout
-
             let (data, response) = try await URLSession.shared.data(for: request)
-
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return fallbackToCache(error: .apiError, codexMetrics: codexMetrics, refreshedAt: refreshedAt)
+            guard let http = response as? HTTPURLResponse else {
+                return AccountUsage(account: account, limits: cache?.data,
+                                    error: .apiError, stale: cache?.data != nil)
             }
-
-            if httpResponse.statusCode == 429 {
-                saveCache(CacheEntry(
-                    data: cached?.data,
-                    codexMetrics: codexMetrics,
-                    timestamp: Date().timeIntervalSince1970 * 1000,
-                    backoff: true
-                ))
-                return fallbackToCache(error: .rateLimited, codexMetrics: codexMetrics, refreshedAt: refreshedAt)
+            if http.statusCode == 429 {
+                return AccountUsage(account: account, limits: cache?.data,
+                                    error: .rateLimited, stale: cache?.data != nil)
             }
-
-            guard httpResponse.statusCode == 200 else {
-                if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-                    KeychainReader.clearCache()
-                }
-                return FetchResult(
-                    claudeLimits: nil,
-                    codexMetrics: codexMetrics,
-                    stale: false,
-                    error: .apiError,
-                    refreshedAt: refreshedAt
-                )
+            if http.statusCode == 401 || http.statusCode == 403 {
+                return AccountUsage(account: account, limits: cache?.data,
+                                    error: .needsReLogin, stale: cache?.data != nil)
             }
-
+            guard http.statusCode == 200 else {
+                return AccountUsage(account: account, limits: cache?.data,
+                                    error: .apiError, stale: cache?.data != nil)
+            }
             let limits = try JSONDecoder().decode(UsageLimits.self, from: data)
-            saveCache(CacheEntry(
-                data: limits,
-                codexMetrics: codexMetrics,
-                timestamp: Date().timeIntervalSince1970 * 1000,
-                backoff: false
-            ))
-            return FetchResult(
-                claudeLimits: limits,
-                codexMetrics: codexMetrics,
-                stale: false,
-                error: nil,
-                refreshedAt: refreshedAt
-            )
+            return AccountUsage(account: account, limits: limits, error: nil, stale: false)
         } catch {
-            return fallbackToCache(error: .apiError, codexMetrics: codexMetrics, refreshedAt: refreshedAt)
+            return AccountUsage(account: account, limits: cache?.data,
+                                error: .apiError, stale: cache?.data != nil)
         }
     }
 
@@ -151,53 +184,20 @@ class UsageService {
 
     private func ensureCacheDir() {
         if !FileManager.default.fileExists(atPath: cacheDir) {
-            try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(atPath: cacheDir,
+                                                     withIntermediateDirectories: true)
         }
     }
 
-    private func fallbackToCache(error: FetchError, codexMetrics: CodexMetrics?, refreshedAt: Date) -> FetchResult {
-        if let cached = loadCache(), cached.data != nil || cached.codexMetrics != nil {
-            return FetchResult(
-                claudeLimits: cached.data,
-                codexMetrics: codexMetrics ?? cached.codexMetrics,
-                stale: true,
-                error: nil,
-                refreshedAt: refreshedAt
-            )
-        }
-        return FetchResult(
-            claudeLimits: nil,
-            codexMetrics: codexMetrics,
-            stale: false,
-            error: error,
-            refreshedAt: refreshedAt
-        )
-    }
-
-    private func cacheCodexMetricsIfNeeded(_ codexMetrics: CodexMetrics?, existingCache: CacheEntry?) {
-        guard let codexMetrics, existingCache?.codexMetrics != codexMetrics else {
-            return
-        }
-
-        saveCache(CacheEntry(
-            data: existingCache?.data,
-            codexMetrics: codexMetrics,
-            timestamp: existingCache?.timestamp ?? Date().timeIntervalSince1970 * 1000,
-            backoff: existingCache?.backoff ?? false
-        ))
-    }
-
-    // MARK: - Codex metrics
+    // MARK: - Codex metrics (unchanged logic from previous version)
 
     private func loadCodexMetrics() -> CodexMetrics? {
         if let metrics = loadCodexMetricsFromOmx(), metrics.hasVisibleQuota {
             return metrics
         }
-
         if let metrics = loadCodexMetricsFromRollouts() {
             return metrics
         }
-
         return loadCodexMetricsFromOmx()
     }
 
@@ -205,157 +205,109 @@ class UsageService {
         let metricsPath = workspaceRoot()
             .appendingPathComponent(".omx", isDirectory: true)
             .appendingPathComponent("metrics.json")
-
-        guard let data = try? Data(contentsOf: metricsPath) else {
-            return nil
-        }
-
+        guard let data = try? Data(contentsOf: metricsPath) else { return nil }
         return try? JSONDecoder().decode(CodexMetrics.self, from: data)
     }
 
     private func loadCodexMetricsFromRollouts() -> CodexMetrics? {
         var newestMetrics: CodexMetrics?
         var newestDate: Date?
-
         for sessionsDir in codexSessionsRoots() {
             guard let enumerator = FileManager.default.enumerator(
                 at: sessionsDir,
                 includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsHiddenFiles]
-            ) else {
-                continue
-            }
-
+            ) else { continue }
             let rolloutFiles = enumerator
                 .compactMap { $0 as? URL }
                 .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix("rollout-") }
-                .sorted { lhs, rhs in
-                    let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                    let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                    return lhsDate > rhsDate
+                .sorted { a, b in
+                    let ad = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    let bd = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    return ad > bd
                 }
-
-            for rolloutFile in rolloutFiles {
-                guard let metrics = parseCodexMetrics(from: rolloutFile) else {
-                    continue
-                }
-                let metricsDate = parseISO8601(metrics.last_activity) ?? .distantPast
-                if newestDate == nil || metricsDate > newestDate! {
-                    newestDate = metricsDate
+            for f in rolloutFiles {
+                guard let metrics = parseCodexMetrics(from: f) else { continue }
+                let d = parseISO8601(metrics.last_activity) ?? .distantPast
+                if newestDate == nil || d > newestDate! {
+                    newestDate = d
                     newestMetrics = metrics
                 }
             }
         }
-
         return newestMetrics
     }
 
     private func parseCodexMetrics(from rolloutFile: URL) -> CodexMetrics? {
-        guard let data = try? Data(contentsOf: rolloutFile) else {
-            return nil
-        }
+        guard let data = try? Data(contentsOf: rolloutFile) else { return nil }
         let content = String(decoding: data, as: UTF8.self)
-
         for line in content.split(separator: "\n").reversed() {
             guard let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = object["type"] as? String,
-                  type == "event_msg",
+                  let type = object["type"] as? String, type == "event_msg",
                   let payload = object["payload"] as? [String: Any],
-                  let payloadType = payload["type"] as? String,
-                  payloadType == "token_count" else {
-                continue
-            }
-
+                  let payloadType = payload["type"] as? String, payloadType == "token_count"
+            else { continue }
             let info = payload["info"] as? [String: Any]
             let totalUsage = info?["total_token_usage"] as? [String: Any]
             let rateLimits = payload["rate_limits"] as? [String: Any]
             let primary = rateLimits?["primary"] as? [String: Any]
             let secondary = rateLimits?["secondary"] as? [String: Any]
-
-            let primaryUsed = doubleValue(primary?["used_percent"])
-            let secondaryUsed = doubleValue(secondary?["used_percent"])
-            let primaryReset = doubleValue(primary?["resets_at"])
-            let secondaryReset = doubleValue(secondary?["resets_at"])
-            let totalTokens = doubleValue(totalUsage?["total_tokens"])
-            let timestamp = object["timestamp"] as? String
-            let planType = rateLimits?["plan_type"] as? String
-
-            let metrics = CodexMetrics(
-                last_activity: timestamp,
-                session_total_tokens: totalTokens,
-                five_hour_limit_pct: primaryUsed,
-                weekly_limit_pct: secondaryUsed,
-                five_hour_resets_at: primaryReset,
-                weekly_resets_at: secondaryReset,
-                plan_type: planType
+            let m = CodexMetrics(
+                last_activity: object["timestamp"] as? String,
+                session_total_tokens: doubleValue(totalUsage?["total_tokens"]),
+                five_hour_limit_pct: doubleValue(primary?["used_percent"]),
+                weekly_limit_pct: doubleValue(secondary?["used_percent"]),
+                five_hour_resets_at: doubleValue(primary?["resets_at"]),
+                weekly_resets_at: doubleValue(secondary?["resets_at"]),
+                plan_type: rateLimits?["plan_type"] as? String
             )
-
-            if metrics.hasVisibleQuota {
-                return metrics
-            }
+            if m.hasVisibleQuota { return m }
         }
-
         return nil
     }
 
     private func doubleValue(_ value: Any?) -> Double? {
         switch value {
-        case let number as NSNumber:
-            return number.doubleValue
-        case let string as String:
-            return Double(string)
-        default:
-            return nil
+        case let n as NSNumber: return n.doubleValue
+        case let s as String: return Double(s)
+        default: return nil
         }
     }
 
     private func codexSessionsRoots() -> [URL] {
         var roots: [URL] = []
-
-        if let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"], !codexHome.isEmpty {
-            roots.append(URL(fileURLWithPath: codexHome).appendingPathComponent("sessions", isDirectory: true))
+        if let ch = ProcessInfo.processInfo.environment["CODEX_HOME"], !ch.isEmpty {
+            roots.append(URL(fileURLWithPath: ch).appendingPathComponent("sessions", isDirectory: true))
         }
-
-        roots.append(
-            workspaceRoot()
-                .appendingPathComponent(".codex", isDirectory: true)
-                .appendingPathComponent("sessions", isDirectory: true)
-        )
-
-        roots.append(
-            URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent(".codex", isDirectory: true)
-                .appendingPathComponent("sessions", isDirectory: true)
-        )
-
+        roots.append(workspaceRoot()
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true))
+        roots.append(URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true))
         var unique: [URL] = []
         var seen = Set<String>()
-        for root in roots {
-            let path = root.standardizedFileURL.path
-            if seen.insert(path).inserted {
-                unique.append(root)
-            }
+        for r in roots where seen.insert(r.standardizedFileURL.path).inserted {
+            unique.append(r)
         }
         return unique
     }
 
-    private func parseISO8601(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    private func parseISO8601(_ v: String?) -> Date? {
+        guard let v, !v.isEmpty else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: v) ?? ISO8601DateFormatter().date(from: v)
     }
 
     private func workspaceRoot() -> URL {
-        if let workspaceRoot = ProcessInfo.processInfo.environment["CLAUDEDOCK_WORKSPACE_ROOT"], !workspaceRoot.isEmpty {
-            return URL(fileURLWithPath: workspaceRoot)
+        if let r = ProcessInfo.processInfo.environment["CLAUDEDOCK_WORKSPACE_ROOT"], !r.isEmpty {
+            return URL(fileURLWithPath: r)
         }
-
-        if let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"], !codexHome.isEmpty {
-            return URL(fileURLWithPath: codexHome).deletingLastPathComponent()
+        if let ch = ProcessInfo.processInfo.environment["CODEX_HOME"], !ch.isEmpty {
+            return URL(fileURLWithPath: ch).deletingLastPathComponent()
         }
-
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     }
 }
