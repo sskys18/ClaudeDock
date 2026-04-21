@@ -1,11 +1,13 @@
 import Foundation
 
 class UsageService {
+    static let currentAccountId = "__current__"
+
     private let cacheDir = NSHomeDirectory() + "/.claude"
     private let cachePath: String
     private let configPath: String
-    private let backoffSeconds: TimeInterval = 300
-    private let apiTimeout: TimeInterval = 5
+    private let backoffSeconds: TimeInterval = 120
+    private let apiTimeout: TimeInterval = 8
 
     private var isFetching = false
 
@@ -22,6 +24,14 @@ class UsageService {
             return .defaultConfig
         }
         return config
+    }
+
+    func clearBackoffs() {
+        guard var cache = loadCache() else { return }
+        for k in cache.accounts.keys {
+            cache.accounts[k]?.backoff = false
+        }
+        saveCache(cache)
     }
 
     func saveConfig(_ config: AppConfig) {
@@ -49,11 +59,65 @@ class UsageService {
         isFetching = true
         defer { isFetching = false }
 
+        let liveBlob: String? = (try? AccountStore.readClaudeCodeBlob())?.blob
+
+        // `activeAccountId` is the user's declaration of which saved
+        // account corresponds to the live Claude Code keychain slot.
+        // We trust it instead of comparing blobs (tokens are opaque and
+        // rotate, so equality/identity heuristics are unreliable).
+        let activeExists = config.activeAccountId.map { id in
+            config.accounts.contains(where: { $0.id == id })
+        } ?? false
+
+        var effective: [(ref: AccountRef, blob: String?, isLive: Bool)] = []
+        for ref in config.accounts {
+            let isLive = (ref.id == config.activeAccountId && liveBlob != nil)
+            let saved = try? AccountStore.loadBundle(label: ref.label)
+            let effectiveBlob: String?
+            if isLive, let liveBlob {
+                if saved != liveBlob {
+                    try? AccountStore.saveBundle(label: ref.label,
+                                                 blob: liveBlob, overwrite: true)
+                }
+                effectiveBlob = liveBlob
+            } else {
+                effectiveBlob = saved
+            }
+            effective.append((ref, effectiveBlob, isLive))
+        }
+
+        var activeId = config.activeAccountId
+        if let liveBlob, !activeExists {
+            let synth = AccountRef(
+                id: UsageService.currentAccountId,
+                label: "Current login",
+                kind: .claude
+            )
+            effective.insert((synth, liveBlob, true), at: 0)
+            activeId = synth.id
+        }
+
         var usages: [AccountUsage] = []
-        for acct in config.accounts {
-            let usage = await fetchOne(account: acct, cache: cached.accounts[acct.id])
-            cached.accounts[acct.id] = PerAccountCache(
-                data: usage.limits ?? cached.accounts[acct.id]?.data,
+        for e in effective {
+            let prior = cached.accounts[e.ref.id]
+            if let prior, prior.backoff {
+                let age = Date().timeIntervalSince1970 - prior.timestamp / 1000
+                if age < backoffSeconds {
+                    usages.append(AccountUsage(
+                        account: e.ref, limits: prior.data,
+                        error: .rateLimited, stale: true
+                    ))
+                    continue
+                }
+            }
+            let usage = await fetchOne(
+                account: e.ref,
+                blob: e.blob,
+                isLive: e.isLive,
+                cache: prior
+            )
+            cached.accounts[e.ref.id] = PerAccountCache(
+                data: usage.limits ?? prior?.data,
                 timestamp: Date().timeIntervalSince1970 * 1000,
                 backoff: usage.error == .rateLimited,
                 error: usage.error
@@ -69,13 +133,13 @@ class UsageService {
             accounts: usages,
             codexMetrics: codexMetrics,
             refreshedAt: refreshedAt,
-            activeAccountId: config.activeAccountId
+            activeAccountId: activeId
         )
     }
 
     private func buildStaleResult(config: AppConfig, cache: CacheEntry,
                                   codex: CodexMetrics?, refreshedAt: Date) -> FetchResult {
-        let accts = config.accounts.map { acct in
+        var accts = config.accounts.map { acct in
             AccountUsage(
                 account: acct,
                 limits: cache.accounts[acct.id]?.data,
@@ -83,42 +147,48 @@ class UsageService {
                 stale: true
             )
         }
+        var activeId = config.activeAccountId
+        if let entry = cache.accounts[UsageService.currentAccountId] {
+            let synth = AccountRef(
+                id: UsageService.currentAccountId,
+                label: "Current login",
+                kind: .claude
+            )
+            accts.insert(
+                AccountUsage(account: synth, limits: entry.data,
+                             error: entry.error, stale: true),
+                at: 0
+            )
+            if activeId == nil
+                || !config.accounts.contains(where: { $0.id == activeId }) {
+                activeId = synth.id
+            }
+        }
         return FetchResult(
             accounts: accts,
             codexMetrics: codex,
             refreshedAt: refreshedAt,
-            activeAccountId: config.activeAccountId
+            activeAccountId: activeId
         )
     }
 
-    private func fetchOne(account: AccountRef, cache: PerAccountCache?) async -> AccountUsage {
-        if let c = cache, c.backoff {
-            let ageSec = Date().timeIntervalSince1970 - c.timestamp / 1000
-            if ageSec < backoffSeconds {
-                return AccountUsage(account: account, limits: c.data,
-                                    error: .rateLimited, stale: true)
-            }
-        }
-
-        let blob: String
-        do {
-            blob = try AccountStore.loadBundle(label: account.label)
-        } catch {
+    private func fetchOne(account: AccountRef, blob: String?, isLive: Bool,
+                          cache: PerAccountCache?) async -> AccountUsage {
+        guard let initial = blob else {
             return AccountUsage(account: account, limits: cache?.data,
                                 error: .noKey, stale: cache?.data != nil)
         }
 
-        var currentBlob = blob
-        if let parsed = ClaudeOAuthBlob.parse(blob),
+        var currentBlob = initial
+        if let parsed = ClaudeOAuthBlob.parse(initial),
            let exp = parsed.expiresAt,
            exp.timeIntervalSinceNow < 60 {
-            let result = await OAuthRefresher.refresh(blob: blob)
+            let result = await OAuthRefresher.refresh(blob: initial)
             switch result {
             case .success(let refreshed):
                 currentBlob = refreshed.rawBlob
-                try? AccountStore.saveBundle(label: account.label,
-                                             blob: refreshed.rawBlob,
-                                             overwrite: true)
+                persistRefreshed(account: account, isLive: isLive,
+                                 blob: refreshed.rawBlob)
             case .failure:
                 return AccountUsage(account: account, limits: cache?.data,
                                     error: .needsReLogin, stale: cache?.data != nil)
@@ -134,7 +204,6 @@ class UsageService {
         request.httpMethod = "GET"
         request.setValue("Bearer \(parsed.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("ClaudeDock/1.0.0", forHTTPHeaderField: "User-Agent")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.timeoutInterval = apiTimeout
@@ -144,6 +213,14 @@ class UsageService {
             guard let http = response as? HTTPURLResponse else {
                 return AccountUsage(account: account, limits: cache?.data,
                                     error: .apiError, stale: cache?.data != nil)
+            }
+            if http.statusCode != 200 {
+                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+                let ra = http.value(forHTTPHeaderField: "Retry-After") ?? "-"
+                let remaining = http.value(forHTTPHeaderField: "anthropic-ratelimit-requests-remaining") ?? "-"
+                let reset = http.value(forHTTPHeaderField: "anthropic-ratelimit-requests-reset") ?? "-"
+                let line = "usage[\(account.label)] status=\(http.statusCode) retry=\(ra) remaining=\(remaining) reset=\(reset) body=\(body)\n"
+                FileHandle.standardError.write(Data(line.utf8))
             }
             if http.statusCode == 429 {
                 return AccountUsage(account: account, limits: cache?.data,
@@ -162,6 +239,17 @@ class UsageService {
         } catch {
             return AccountUsage(account: account, limits: cache?.data,
                                 error: .apiError, stale: cache?.data != nil)
+        }
+    }
+
+    private func persistRefreshed(account: AccountRef, isLive: Bool, blob: String) {
+        if account.id != UsageService.currentAccountId {
+            try? AccountStore.saveBundle(label: account.label,
+                                         blob: blob, overwrite: true)
+        }
+        if isLive {
+            let acct = (try? AccountStore.readClaudeCodeBlob().acct) ?? NSUserName()
+            try? AccountStore.writeClaudeCodeBlob(acct: acct, blob: blob)
         }
     }
 

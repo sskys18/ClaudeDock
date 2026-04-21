@@ -3,10 +3,6 @@ import Cocoa
 @objc protocol MenuBuilderDelegate: AnyObject {
     func refreshNow()
     func changeInterval(_ sender: NSMenuItem)
-    func saveCurrentAs()
-    func switchTo(_ sender: NSMenuItem)
-    func renameAccount(_ sender: NSMenuItem)
-    func deleteAccount(_ sender: NSMenuItem)
 }
 
 class MenuBuilder {
@@ -36,55 +32,6 @@ class MenuBuilder {
         if let codex = result.codexMetrics {
             menu.addItem(buildCodexRow(codex: codex))
         }
-        menu.addItem(.separator())
-
-        let save = NSMenuItem(title: "Save current login as…",
-                              action: #selector(MenuBuilderDelegate.saveCurrentAs),
-                              keyEquivalent: "s")
-        save.target = delegate
-        menu.addItem(save)
-
-        if !result.accounts.isEmpty {
-            let switchItem = NSMenuItem(title: "Switch active login", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
-            for usage in result.accounts {
-                let isActive = (result.activeAccountId == usage.account.id)
-                let s = NSMenuItem(
-                    title: usage.account.label + (isActive ? " (active)" : ""),
-                    action: #selector(MenuBuilderDelegate.switchTo(_:)),
-                    keyEquivalent: "")
-                s.target = delegate
-                s.representedObject = usage.account.id
-                if isActive { s.state = .on }
-                sub.addItem(s)
-            }
-            switchItem.submenu = sub
-            menu.addItem(switchItem)
-
-            let manage = NSMenuItem(title: "Manage accounts", action: nil, keyEquivalent: "")
-            let mSub = NSMenu()
-            for usage in result.accounts {
-                let per = NSMenuItem(title: usage.account.label, action: nil, keyEquivalent: "")
-                let perSub = NSMenu()
-                let ren = NSMenuItem(title: "Rename…",
-                    action: #selector(MenuBuilderDelegate.renameAccount(_:)),
-                    keyEquivalent: "")
-                ren.target = delegate
-                ren.representedObject = usage.account.id
-                perSub.addItem(ren)
-                let del = NSMenuItem(title: "Delete",
-                    action: #selector(MenuBuilderDelegate.deleteAccount(_:)),
-                    keyEquivalent: "")
-                del.target = delegate
-                del.representedObject = usage.account.id
-                perSub.addItem(del)
-                per.submenu = perSub
-                mSub.addItem(per)
-            }
-            manage.submenu = mSub
-            menu.addItem(manage)
-        }
-
         menu.addItem(.separator())
 
         let refresh = NSMenuItem(title: "↻ Refresh",
@@ -128,7 +75,7 @@ class MenuBuilder {
         s.append(NSAttributedString(
             string: " \(usage.account.label)",
             attributes: [
-                .foregroundColor: NSColor.labelColor,
+                .foregroundColor: active ? NSColor.labelColor : NSColor.secondaryLabelColor,
                 .font: active ? boldFont() : rowFont()
             ]
         ))
@@ -166,10 +113,14 @@ class MenuBuilder {
         item.isEnabled = false
         let s = NSMutableAttributedString()
         s.append(NSAttributedString(
-            string: "• ",
+            string: "◆ ",
+            attributes: [.foregroundColor: NSColor.systemPurple.withAlphaComponent(0.85),
+                         .font: rowFont()]
+        ))
+        s.append(NSAttributedString(
+            string: "Codex",
             attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: rowFont()]
         ))
-        s.append(plain("Codex"))
         s.append(plain("\t"))
         appendBucket(into: s, label: "5H",
                      percent: codex.five_hour_limit_pct,
@@ -185,10 +136,10 @@ class MenuBuilder {
     private func applyColumns(_ s: NSMutableAttributedString) -> NSAttributedString {
         let para = NSMutableParagraphStyle()
         para.tabStops = [
-            NSTextTab(textAlignment: .left, location: 140, options: [:]),
-            NSTextTab(textAlignment: .left, location: 260, options: [:])
+            NSTextTab(textAlignment: .left, location: 90, options: [:]),
+            NSTextTab(textAlignment: .left, location: 180, options: [:])
         ]
-        para.defaultTabInterval = 120
+        para.defaultTabInterval = 90
         s.addAttribute(.paragraphStyle, value: para,
                        range: NSRange(location: 0, length: s.length))
         return s
@@ -199,17 +150,22 @@ class MenuBuilder {
                               resetDate: Date? = nil) {
         let color = colorForPercent(percent)
         s.append(NSAttributedString(
-            string: "• ",
+            string: sparkChar(percent) + " ",
             attributes: [.foregroundColor: color, .font: rowFont()]
         ))
         s.append(percentAttr(percent))
         let date = resetDate ?? (resetISO.flatMap { parseISO8601($0) })
         if let date {
             s.append(NSAttributedString(
-                string: "  " + formatCountdown(date),
-                attributes: [.foregroundColor: NSColor.tertiaryLabelColor, .font: rowFont()]
+                string: " " + formatCountdown(date),
+                attributes: [.foregroundColor: NSColor.tertiaryLabelColor,
+                             .font: smallFont()]
             ))
         }
+    }
+
+    private func sparkChar(_ v: Double?) -> String {
+        (v == nil) ? "·" : "●"
     }
 
     private func colorForPercent(_ v: Double?) -> NSColor {
@@ -278,6 +234,10 @@ class MenuBuilder {
 
     private func boldFont() -> NSFont {
         NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+    }
+
+    private func smallFont() -> NSFont {
+        NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
     }
 
     private func footerText(_ result: FetchResult) -> String {
