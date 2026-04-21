@@ -18,7 +18,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         menuBuilder.delegate = self
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "--"
+        if let logo = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "ClaudeDock") {
+            logo.isTemplate = true
+            statusItem.button?.image = logo
+            statusItem.button?.imagePosition = .imageLeft
+            statusItem.button?.imageHugsTitle = true
+        }
+        statusItem.button?.title = " --"
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
 
         let menu = NSMenu()
@@ -43,14 +49,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
 
     private func updateMenuBarTitle(_ result: FetchResult) {
         let activeUsage = result.accounts.first(where: { $0.account.id == result.activeAccountId })
-        let claude: Double? = activeUsage?.limits?.five_hour.map { clamp($0.utilization) }
-        let codex: Double? = result.codexMetrics?.five_hour_limit_pct.map { clamp($0) }
+        let fiveH: Double? = activeUsage?.limits?.five_hour.map { clamp($0.utilization) }
+        let sevenD: Double? = activeUsage?.limits?.seven_day.map { clamp($0.utilization) }
 
-        if claude != nil || codex != nil {
-            let c = claude.map { String(format: "%.0f%%", $0) } ?? "--"
-            let x = codex.map { String(format: "%.0f%%", $0) } ?? "--"
-            let usage = max(claude ?? 0, codex ?? 0)
-            setBar("\(c) | \(x)", color: colorFor(usage))
+        if fiveH != nil || sevenD != nil {
+            let h = fiveH.map { String(format: "%.0f", $0) } ?? "--"
+            let d = sevenD.map { String(format: "%.0f", $0) } ?? "--"
+            let usage = max(fiveH ?? 0, sevenD ?? 0)
+            setBar("\(h) | \(d)", color: colorFor(usage))
         } else if !result.accounts.isEmpty {
             setBar("!", color: .systemRed)
         } else {
@@ -79,7 +85,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             .foregroundColor: color,
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         ]
-        statusItem.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+        statusItem.button?.attributedTitle = NSAttributedString(
+            string: " \(text)",
+            attributes: attrs
+        )
     }
 
     private func colorFor(_ pct: Double) -> NSColor {

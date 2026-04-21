@@ -43,9 +43,44 @@ Notes:
 - there are no progress bars
 
 The menu also includes:
+- per-account rows (one per saved Claude login) showing `5h` and `7d` utilization; active account marked with a filled dot
+- `Save current login as…` — labels the Claude identity currently stored in the keychain
+- `Switch active login ▸` — swaps `Claude Code-credentials` in the keychain to a saved bundle without running `/login`
+- `Manage accounts ▸` — rename / delete saved bundles
 - `↻ Refresh`
 - auto-refresh interval picker
 - `Quit ClaudeDock`
+
+## Multi-account workflow
+
+ClaudeDock can track up to N Claude accounts plus one Codex identity at once.
+
+1. `/login` in Claude Code with the first account.
+2. ClaudeDock menu → `Save current login as…` → label it (`Work`, `Personal`, …).
+3. `/login` again with the second account. Save it under a different label.
+4. After that, do **not** run `/login` again to swap between the two — use
+   `Switch active login ▸ <label>` from the ClaudeDock menu. That swaps
+   only the `Claude Code-credentials` keychain entry, so plugins, MCP
+   registrations, `settings.json`, memory, and history remain untouched.
+5. Any running `claude` CLI processes keep their old token in memory;
+   restart them to pick up the new identity.
+
+### Known limitation
+
+MCP servers (Slack, Google Drive, …) store their OAuth sessions keyed to
+the authenticated Claude identity, inside each MCP server's own storage.
+They always require re-authorization when you switch Claude identities —
+this is not something ClaudeDock can preserve. Claude Code itself records
+this state in `~/.claude/mcp-needs-auth-cache.json`. Plugin install state
+and settings are **not** affected by switching.
+
+### OAuth refresh
+
+ClaudeDock attempts opportunistic OAuth refresh against Anthropic's token
+endpoint when an account's access token is near expiry. Without Claude
+Code's OAuth `client_id` wired in, refresh always fails gracefully and
+the affected account is marked `re-login required` until the user does
+`/login` + `Save current login as…` again.
 
 ## Data sources
 
