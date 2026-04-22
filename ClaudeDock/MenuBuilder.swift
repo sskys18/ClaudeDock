@@ -75,7 +75,7 @@ class MenuBuilder {
         s.append(NSAttributedString(
             string: " \(usage.account.label)",
             attributes: [
-                .foregroundColor: active ? NSColor.labelColor : NSColor.secondaryLabelColor,
+                .foregroundColor: NSColor.labelColor,
                 .font: active ? boldFont() : rowFont()
             ]
         ))
@@ -136,10 +136,10 @@ class MenuBuilder {
     private func applyColumns(_ s: NSMutableAttributedString) -> NSAttributedString {
         let para = NSMutableParagraphStyle()
         para.tabStops = [
-            NSTextTab(textAlignment: .left, location: 90, options: [:]),
-            NSTextTab(textAlignment: .left, location: 180, options: [:])
+            NSTextTab(textAlignment: .left, location: 100, options: [:]),
+            NSTextTab(textAlignment: .left, location: 200, options: [:])
         ]
-        para.defaultTabInterval = 90
+        para.defaultTabInterval = 100
         s.addAttribute(.paragraphStyle, value: para,
                        range: NSRange(location: 0, length: s.length))
         return s
@@ -158,7 +158,7 @@ class MenuBuilder {
         if let date {
             s.append(NSAttributedString(
                 string: " " + formatCountdown(date),
-                attributes: [.foregroundColor: NSColor.tertiaryLabelColor,
+                attributes: [.foregroundColor: NSColor.secondaryLabelColor,
                              .font: smallFont()]
             ))
         }
@@ -207,17 +207,18 @@ class MenuBuilder {
         guard let v = value else {
             return NSAttributedString(
                 string: "--",
-                attributes: [.foregroundColor: NSColor.tertiaryLabelColor, .font: rowFont()]
+                attributes: [.foregroundColor: NSColor.secondaryLabelColor,
+                             .font: boldFont()]
             )
         }
         let clamped = min(100, max(0, v))
         let color: NSColor
         if clamped > 80 { color = .systemRed }
-        else if clamped > 50 { color = .systemYellow }
+        else if clamped > 50 { color = .systemOrange }
         else { color = .systemGreen }
         return NSAttributedString(
             string: String(format: "%.0f%%", clamped),
-            attributes: [.foregroundColor: color, .font: rowFont()]
+            attributes: [.foregroundColor: color, .font: boldFont()]
         )
     }
 
@@ -229,15 +230,15 @@ class MenuBuilder {
     }
 
     private func rowFont() -> NSFont {
-        NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
     }
 
     private func boldFont() -> NSFont {
-        NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
     }
 
     private func smallFont() -> NSFont {
-        NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+        NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
     }
 
     private func footerText(_ result: FetchResult) -> String {

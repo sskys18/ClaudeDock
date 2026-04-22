@@ -11,17 +11,20 @@ It is designed to:
 ## What it shows
 
 ### Menu bar title
-The menu bar title shows:
+The menu bar title shows the **active Claude account's** 5-hour and 7-day
+utilization:
 
 ```text
-<Claude 5h used %> | <Codex 5h used %>
+<5h %> · <7d %>
 ```
 
 Example:
 
 ```text
-18% | 20%
+61 · 48
 ```
+
+Color reflects the higher of the two: green ≤50%, orange 50–80%, red >80%.
 
 - left side = Claude 5-hour usage percent
 - right side = Codex 5-hour usage percent
@@ -47,23 +50,53 @@ The menu also includes:
 - `Save current login as…` — labels the Claude identity currently stored in the keychain
 - `Switch active login ▸` — swaps `Claude Code-credentials` in the keychain to a saved bundle without running `/login`
 - `Manage accounts ▸` — rename / delete saved bundles
-- `↻ Refresh`
-- auto-refresh interval picker
+- `↻ Refresh` (clears rate-limit backoff, forces a fresh fetch)
+- auto-refresh interval picker (15s / 30s / 1m / 2m / 5m)
 - `Quit ClaudeDock`
+
+Account-management UI was intentionally stripped. Manage accounts by
+editing `~/.claude/claudedock.json` + keychain directly (see below).
 
 ## Multi-account workflow
 
-ClaudeDock can track up to N Claude accounts plus one Codex identity at once.
+ClaudeDock tracks N Claude accounts plus one Codex identity. Config lives
+in `~/.claude/claudedock.json`:
 
-1. `/login` in Claude Code with the first account.
-2. ClaudeDock menu → `Save current login as…` → label it (`Work`, `Personal`, …).
-3. `/login` again with the second account. Save it under a different label.
-4. After that, do **not** run `/login` again to swap between the two — use
-   `Switch active login ▸ <label>` from the ClaudeDock menu. That swaps
-   only the `Claude Code-credentials` keychain entry, so plugins, MCP
-   registrations, `settings.json`, memory, and history remain untouched.
-5. Any running `claude` CLI processes keep their old token in memory;
-   restart them to pick up the new identity.
+```json
+{
+  "refreshInterval": 120,
+  "activeAccountId": "main",
+  "accounts": [
+    {"id": "main", "label": "Main",  "kind": "claude"},
+    {"id": "sub1", "label": "Sub1",  "kind": "claude"}
+  ]
+}
+```
+
+Semantics:
+
+- `activeAccountId` declares which saved account corresponds to the live
+  `Claude Code-credentials` keychain slot. The app uses the live blob
+  (not the saved bundle) when fetching for the active account, and
+  mirrors OAuth refresh back to both.
+- Non-active accounts are fetched using their saved bundle (keychain
+  service `ClaudeDock Account <label>`).
+- If `activeAccountId` is empty or unknown but a live login exists, the
+  menu shows a synthetic `Current login` row.
+
+To add an account: `/login` in Claude Code, then copy the resulting
+blob:
+
+```bash
+BLOB=$(security find-generic-password -s "Claude Code-credentials" -w)
+security add-generic-password -U -s "ClaudeDock Account Main" -a ClaudeDock -w "$BLOB"
+```
+
+Register it in `claudedock.json` and set `activeAccountId` to match.
+
+To switch the live login, overwrite the `Claude Code-credentials` slot
+with the target saved bundle's blob and update `activeAccountId`. Any
+running `claude` CLI keeps its old token in memory — restart it.
 
 ### Known limitation
 
@@ -77,10 +110,21 @@ and settings are **not** affected by switching.
 ### OAuth refresh
 
 ClaudeDock attempts opportunistic OAuth refresh against Anthropic's token
-endpoint when an account's access token is near expiry. Without Claude
-Code's OAuth `client_id` wired in, refresh always fails gracefully and
-the affected account is marked `re-login required` until the user does
-`/login` + `Save current login as…` again.
+endpoint when an account's access token is near expiry. On success the
+refreshed blob is written back to both the saved bundle and, when the
+account is the live login, the `Claude Code-credentials` keychain slot
+— so the Claude CLI stays in sync. Without Claude Code's OAuth
+`client_id` wired in, refresh fails gracefully and the account is marked
+`re-login required` until a fresh `/login`.
+
+### Rate limiting
+
+`/api/oauth/usage` is rate-limited per token and shared with the Claude
+CLI. On a 429 the app records a 120-second backoff for that account and
+surfaces the stale cached value instead of hammering the endpoint. The
+`↻ Refresh` menu item clears backoffs and forces a new fetch. Non-200
+responses log status, `Retry-After`, and rate-limit headers to
+`~/Library/Logs/ClaudeDock/stderr.log`.
 
 ## Data sources
 
@@ -89,12 +133,14 @@ Claude data comes from Anthropic usage APIs via the existing local Claude auth s
 
 Source path in code:
 - `ClaudeDock/UsageService.swift`
-- `ClaudeDock/KeychainReader.swift`
+- `ClaudeDock/AccountStore.swift` (keychain I/O via `/usr/bin/security`)
 
 Auth behavior:
 - reuses keychain/file-backed Claude credentials
 - does **not** create a separate login flow
-- avoids duplicate auth prompts after boot when local auth state already exists
+- trusts `activeAccountId` as the mapping from saved bundle → live
+  `Claude Code-credentials` slot (blob-equality matching is unreliable
+  because tokens rotate)
 
 ### Codex / GPT
 Codex data is local-only and does **not** use a separate network auth flow in this app.
@@ -188,9 +234,10 @@ This is separate from ClaudeDock itself, but kept in sync by the installer.
 - `ClaudeDock/AppDelegate.swift` — app lifecycle, refresh loop, menu bar title
 - `ClaudeDock/UsageService.swift` — Claude fetch + Codex local metrics loading
 - `ClaudeDock/MenuBuilder.swift` — dropdown menu construction
-- `ClaudeDock/UsageItemView.swift` — usage row UI
 - `ClaudeDock/Models.swift` — shared data models
-- `ClaudeDock/KeychainReader.swift` — Claude auth reuse
+- `ClaudeDock/AccountStore.swift` — keychain bundle I/O via `security`
+- `ClaudeDock/AccountSwitcher.swift` — save/switch/rename/delete helpers (config-driven; no UI)
+- `ClaudeDock/OAuthRefresher.swift` — token refresh against Anthropic OAuth endpoint
 - `ClaudeDock/ClaudeDockEntry.swift` — app entry point
 
 ### Scripts
@@ -199,13 +246,15 @@ This is separate from ClaudeDock itself, but kept in sync by the installer.
 - `scripts/configure_codex_statusline.py` — update `~/.codex/config.toml`
 
 ## Behavior notes
-- Claude values are shown as **used** percentages.
-- Codex values are also shown as **used** percentages.
-- Claude `7D` includes Sonnet usage in parentheses.
-- The menu is intentionally compact and card-like, with a solid macOS-style background.
-- Each percentage is colored independently by its own value.
-- The app refreshes both Claude and Codex when `Refresh` is clicked.
-- The footer shows the last refresh time of the app UI.
+- Claude and Codex values are shown as **used** percentages.
+- Per-bucket color thresholds: green ≤50%, orange 50–80%, red >80%.
+- Active account row is bold with a filled accent dot; inactive rows use
+  the same label color but regular weight and a hollow dot.
+- Each row shows 5H and 7D buckets side by side, followed by the reset
+  countdown for that bucket.
+- Manual `↻ Refresh` clears per-account rate-limit backoff and forces a
+  fresh fetch.
+- Footer shows `Last refreshed: HH:MM:SS`.
 
 ## Verification commands
 
