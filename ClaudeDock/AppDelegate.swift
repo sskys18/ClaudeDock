@@ -53,15 +53,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         let sevenD: Double? = activeUsage?.limits?.seven_day.map { clamp($0.utilization) }
 
         if fiveH != nil || sevenD != nil {
-            let h = fiveH.map { String(format: "%.0f", $0) } ?? "--"
-            let d = sevenD.map { String(format: "%.0f", $0) } ?? "--"
-            let usage = max(fiveH ?? 0, sevenD ?? 0)
-            setBar("\(h) · \(d)", color: colorFor(usage))
+            setBarDual(fiveH: fiveH, sevenD: sevenD)
         } else if !result.accounts.isEmpty {
             setBar("!", color: .systemRed)
         } else {
-            setBar("--", color: .white)
+            setBar("--", color: NSColor.secondaryLabelColor)
         }
+    }
+
+    private func setBarDual(fiveH: Double?, sevenD: Double?) {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        let dim = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        let s = NSMutableAttributedString(string: " ")
+        let hStr = fiveH.map { String(format: "%.0f", $0) } ?? "--"
+        let dStr = sevenD.map { String(format: "%.0f", $0) } ?? "--"
+        s.append(NSAttributedString(string: hStr, attributes: [
+            .foregroundColor: Palette.color(for: fiveH),
+            .font: font
+        ]))
+        s.append(NSAttributedString(string: " · ", attributes: [
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .font: dim
+        ]))
+        s.append(NSAttributedString(string: dStr, attributes: [
+            .foregroundColor: Palette.color(for: sevenD),
+            .font: font
+        ]))
+        statusItem.button?.attributedTitle = s
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -89,12 +107,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             string: " \(text)",
             attributes: attrs
         )
-    }
-
-    private func colorFor(_ pct: Double) -> NSColor {
-        if pct > 80 { return .systemRed }
-        if pct > 50 { return .systemYellow }
-        return .systemGreen
     }
 
     private func clamp(_ v: Double) -> Double { min(100, max(0, v)) }
