@@ -5,6 +5,7 @@ import Cocoa
     func changeInterval(_ sender: NSMenuItem)
     func switchAccount(_ sender: NSMenuItem)
     func saveCurrentAs(_ sender: NSMenuItem)
+    func toggleAutoRotate(_ sender: NSMenuItem)
 }
 
 enum Palette {
@@ -32,10 +33,14 @@ enum Palette {
 class MenuBuilder {
     weak var delegate: MenuBuilderDelegate?
     private var currentInterval: Int
+    private var autoRotateEnabled: Bool
 
-    init(currentInterval: Int) {
+    init(currentInterval: Int, autoRotateEnabled: Bool) {
         self.currentInterval = currentInterval
+        self.autoRotateEnabled = autoRotateEnabled
     }
+
+    func updateAutoRotate(_ enabled: Bool) { autoRotateEnabled = enabled }
 
     func updateInterval(_ seconds: Int) { currentInterval = seconds }
 
@@ -82,6 +87,15 @@ class MenuBuilder {
         )
         saveItem.target = delegate
         menu.addItem(saveItem)
+
+        let rotateItem = NSMenuItem(
+            title: autoRotateEnabled ? "✓ Auto-rotate accounts" : "Auto-rotate accounts",
+            action: #selector(MenuBuilderDelegate.toggleAutoRotate(_:)),
+            keyEquivalent: ""
+        )
+        rotateItem.target = delegate
+        menu.addItem(rotateItem)
+
         menu.addItem(NSMenuItem(title: "Quit ClaudeDock",
             action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 

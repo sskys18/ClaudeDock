@@ -1,4 +1,6 @@
 import Cocoa
+import ClaudeDockCore
+import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderDelegate {
     private var statusItem: NSStatusItem!
@@ -7,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     private var refreshTimer: Timer?
     private var config: AppConfig!
     private var lastResult: FetchResult?
+    private var lastRotateAt: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -14,8 +17,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         usageService = UsageService()
         config = usageService.loadConfig()
         usageService.saveConfig(config)
-        menuBuilder = MenuBuilder(currentInterval: config.refreshInterval)
+        menuBuilder = MenuBuilder(
+            currentInterval: config.refreshInterval,
+            autoRotateEnabled: config.rotation.enabled
+        )
         menuBuilder.delegate = self
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let logo = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "ClaudeDock") {
@@ -44,7 +52,61 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         await MainActor.run {
             lastResult = result
             updateMenuBarTitle(result)
+            evaluateAutoRotation(result)
         }
+    }
+
+    private func evaluateAutoRotation(_ result: FetchResult) {
+        guard config.rotation.enabled else { return }
+        if ProcessInfo.processInfo.environment["CLAUDEDOCK_AUTO_ROTATE"] == "0" {
+            return
+        }
+        let snapshots: [AccountSnapshot] = result.accounts.map { u in
+            AccountSnapshot(
+                id: u.account.id,
+                util5h: u.limits?.five_hour?.utilization,
+                util7d: u.limits?.seven_day?.utilization,
+                reset5hAt: u.limits?.five_hour?.resets_at.flatMap(parseISO8601),
+                hasError: u.error != nil
+            )
+        }
+        let decision = RotationPolicy.decide(
+            accounts: snapshots,
+            activeId: result.activeAccountId,
+            config: config.rotation,
+            lastRotateAt: lastRotateAt,
+            now: Date()
+        )
+        guard case let .switchTo(id, reason) = decision else { return }
+        do {
+            try AccountSwitcher.switchTo(accountId: id, config: &config)
+            usageService.saveConfig(config)
+            usageService.clearBackoffs()
+            lastRotateAt = Date()
+            let label = config.accounts.first(where: { $0.id == id })?.label ?? id
+            postRotationNotification(label: label, reason: reason)
+            Task { await refresh() }
+        } catch {
+            NSLog("auto-rotation switch failed: \(error)")
+        }
+    }
+
+    private func postRotationNotification(label: String, reason: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "ClaudeDock rotated → \(label)"
+        content.body = "\(reason). Restart claude to pick up new account."
+        let req = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req) { _ in }
+    }
+
+    private func parseISO8601(_ iso: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
     }
 
     private func updateMenuBarTitle(_ result: FetchResult) {
@@ -175,6 +237,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             Task { await refresh() }
         } catch {
             showError("Save failed", String(describing: error))
+        }
+    }
+
+    @objc func toggleAutoRotate(_ sender: NSMenuItem) {
+        config.rotation.enabled.toggle()
+        usageService.saveConfig(config)
+        menuBuilder.updateAutoRotate(config.rotation.enabled)
+        if config.rotation.enabled, let result = lastResult {
+            evaluateAutoRotation(result)
         }
     }
 

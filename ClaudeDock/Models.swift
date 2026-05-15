@@ -1,4 +1,5 @@
 import Foundation
+import ClaudeDockCore
 
 enum PercentageSemantic {
     case utilization
@@ -84,23 +85,32 @@ struct AppConfig: Codable {
     var refreshInterval: Int
     var accounts: [AccountRef]
     var activeAccountId: String?
+    var rotation: RotationConfig
 
     static let defaultConfig = AppConfig(
         refreshInterval: 30,
         accounts: [],
-        activeAccountId: nil
+        activeAccountId: nil,
+        rotation: .defaultConfig
     )
 
     enum CodingKeys: String, CodingKey {
         case refreshInterval
         case accounts
         case activeAccountId
+        case rotation
     }
 
-    init(refreshInterval: Int, accounts: [AccountRef], activeAccountId: String?) {
+    init(
+        refreshInterval: Int,
+        accounts: [AccountRef],
+        activeAccountId: String?,
+        rotation: RotationConfig
+    ) {
         self.refreshInterval = refreshInterval
         self.accounts = accounts
         self.activeAccountId = activeAccountId
+        self.rotation = rotation
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +118,7 @@ struct AppConfig: Codable {
         self.refreshInterval = (try? c.decode(Int.self, forKey: .refreshInterval)) ?? 30
         self.accounts = (try? c.decode([AccountRef].self, forKey: .accounts)) ?? []
         self.activeAccountId = try? c.decode(String?.self, forKey: .activeAccountId)
+        self.rotation = (try? c.decode(RotationConfig.self, forKey: .rotation)) ?? .defaultConfig
     }
 }
 

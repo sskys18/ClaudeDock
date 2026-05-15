@@ -49,6 +49,7 @@ The menu also includes:
 - per-account cards showing `5h` and `7d` utilization with reset countdowns; active account is rendered bold
 - inline **`↪ Switch to <label>`** action under each non-active account — swaps `Claude Code-credentials` keychain slot to that saved bundle without running `/login`. Stale slots (refresh token dead) are flagged `(stale — needs re-login)` and prompt for confirmation
 - `Save current login as…` — prompts for a label and stores the current `Claude Code-credentials` blob into `ClaudeDock Account <label>`
+- `Auto-rotate accounts` — checkbox toggle for the auto-rotation policy (see below)
 - auto-refresh interval picker (15s / 30s / 1m / 2m / 5m)
 - `Quit ClaudeDock`
 
@@ -121,6 +122,58 @@ swap. Either re-save that slot via `Save current login as…` after running
 `claude /login`, or proceed and re-run `/login` post-swap.
 
 ![Menu showing per-account cards and Switch to Sub1 action](docs/images/menu-switch.png)
+
+### Auto-rotation
+
+ClaudeDock can auto-switch accounts when the active one approaches its
+quota limits. Toggle via menu: **`Auto-rotate accounts`**.
+
+Policy (pure function, unit-tested in `Tests/ClaudeDockCoreTests/`):
+
+```
+score(account, horizon = 2h):
+  rem5h = 100 - util5h
+  rem7d = 100 - util7d
+  if util7d ≥ 100:   return -∞              # weekly cap absolute
+  if reset5h within horizon: rem5h = 100    # imminent refill
+  return min(rem5h, rem7d)                  # weakest constraint wins
+
+Switch iff:
+  - rotation.enabled
+  - active.util5h ≥ 95 OR active.util7d ≥ 90    # threshold gate
+  - all accounts not 7d-saturated                # avoid pointless flips
+  - best_candidate.score ≥ active.score + 15    # 15pp hysteresis
+  - now - lastRotateAt ≥ 600s                    # 10-min cooldown
+```
+
+Defaults (`RotationConfig.defaultConfig`):
+- `high5h: 95`, `high7d: 90`
+- `hysteresisPp: 15`
+- `cooldownSec: 600` (10 min)
+- `horizonSec: 7200` (2 h)
+
+Override per-instance via `~/.claude/claudedock.json`:
+
+```json
+{
+  "rotation": {
+    "enabled": true,
+    "high5h": 95,
+    "high7d": 90,
+    "hysteresisPp": 15,
+    "cooldownSec": 600,
+    "horizonSec": 7200
+  }
+}
+```
+
+Kill switch: `CLAUDEDOCK_AUTO_ROTATE=0` in the LaunchAgent environment
+disables rotation regardless of config. Add it to `install_launchagent.sh`
+under `EnvironmentVariables` to take effect.
+
+When rotation fires, a macOS notification surfaces the swap and reason.
+Caveat: running `claude` PIDs keep their tokens in memory — rotation
+only affects the *next* `claude` launch.
 
 ### Known limitation
 
