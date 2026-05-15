@@ -3,6 +3,8 @@ import Cocoa
 @objc protocol MenuBuilderDelegate: AnyObject {
     func refreshNow()
     func changeInterval(_ sender: NSMenuItem)
+    func switchAccount(_ sender: NSMenuItem)
+    func saveCurrentAs(_ sender: NSMenuItem)
 }
 
 enum Palette {
@@ -53,6 +55,19 @@ class MenuBuilder {
                 if idx > 0 { menu.addItem(.separator()) }
                 let isActive = (result.activeAccountId == usage.account.id)
                 menu.addItem(buildAccountRow(usage: usage, active: isActive))
+                if !isActive {
+                    let title = (usage.error == .needsReLogin)
+                        ? "  ↪ Switch to \(usage.account.label) (stale — needs re-login)"
+                        : "  ↪ Switch to \(usage.account.label)"
+                    let switchItem = NSMenuItem(
+                        title: title,
+                        action: #selector(MenuBuilderDelegate.switchAccount(_:)),
+                        keyEquivalent: ""
+                    )
+                    switchItem.target = delegate
+                    switchItem.representedObject = usage.account.id
+                    menu.addItem(switchItem)
+                }
             }
         }
         if let codex = result.codexMetrics {
@@ -60,6 +75,13 @@ class MenuBuilder {
             menu.addItem(buildCodexRow(codex: codex))
         }
         menu.addItem(.separator())
+        let saveItem = NSMenuItem(
+            title: "Save current login as…",
+            action: #selector(MenuBuilderDelegate.saveCurrentAs(_:)),
+            keyEquivalent: ""
+        )
+        saveItem.target = delegate
+        menu.addItem(saveItem)
         menu.addItem(NSMenuItem(title: "Quit ClaudeDock",
             action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 

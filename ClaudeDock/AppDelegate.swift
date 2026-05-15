@@ -136,4 +136,53 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         startTimer()
     }
 
+    @objc func switchAccount(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        if let usage = lastResult?.accounts.first(where: { $0.account.id == id }),
+           usage.error == .needsReLogin {
+            let a = NSAlert()
+            a.messageText = "Account needs re-login"
+            a.informativeText = "Stored token for \(usage.account.label) is invalid. Swap anyway? Next claude launch will require /login."
+            a.addButton(withTitle: "Cancel")
+            a.addButton(withTitle: "Swap")
+            if a.runModal() != .alertSecondButtonReturn { return }
+        }
+        do {
+            try AccountSwitcher.switchTo(accountId: id, config: &config)
+            usageService.saveConfig(config)
+            usageService.clearBackoffs()
+            Task { await refresh() }
+        } catch {
+            showError("Switch failed", String(describing: error))
+        }
+    }
+
+    @objc func saveCurrentAs(_ sender: NSMenuItem) {
+        let a = NSAlert()
+        a.messageText = "Save current Claude Code login"
+        a.informativeText = "Enter a label for the saved slot."
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        tf.placeholderString = "e.g. Main, Sub1"
+        a.accessoryView = tf
+        a.addButton(withTitle: "Save")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let label = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return }
+        do {
+            try AccountSwitcher.saveCurrentAs(label: label, config: &config)
+            usageService.saveConfig(config)
+            Task { await refresh() }
+        } catch {
+            showError("Save failed", String(describing: error))
+        }
+    }
+
+    private func showError(_ title: String, _ detail: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = detail
+        a.runModal()
+    }
+
 }

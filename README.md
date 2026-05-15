@@ -46,16 +46,15 @@ Notes:
 - there are no progress bars
 
 The menu also includes:
-- per-account rows (one per saved Claude login) showing `5h` and `7d` utilization; active account marked with a filled dot
-- `Save current login as…` — labels the Claude identity currently stored in the keychain
-- `Switch active login ▸` — swaps `Claude Code-credentials` in the keychain to a saved bundle without running `/login`
-- `Manage accounts ▸` — rename / delete saved bundles
-- `↻ Refresh` (clears rate-limit backoff, forces a fresh fetch)
+- per-account cards showing `5h` and `7d` utilization with reset countdowns; active account is rendered bold
+- inline **`↪ Switch to <label>`** action under each non-active account — swaps `Claude Code-credentials` keychain slot to that saved bundle without running `/login`. Stale slots (refresh token dead) are flagged `(stale — needs re-login)` and prompt for confirmation
+- `Save current login as…` — prompts for a label and stores the current `Claude Code-credentials` blob into `ClaudeDock Account <label>`
 - auto-refresh interval picker (15s / 30s / 1m / 2m / 5m)
 - `Quit ClaudeDock`
 
-Account-management UI was intentionally stripped. Manage accounts by
-editing `~/.claude/claudedock.json` + keychain directly (see below).
+Rename and delete are not wired in UI yet; do those via `security` CLI
++ `~/.claude/claudedock.json` (see below). See `docs/account-switching.md`
+for full UX + screenshots.
 
 ## Multi-account workflow
 
@@ -84,19 +83,44 @@ Semantics:
 - If `activeAccountId` is empty or unknown but a live login exists, the
   menu shows a synthetic `Current login` row.
 
-To add an account: `/login` in Claude Code, then copy the resulting
-blob:
+To add an account, the recommended path is now the menu:
+
+1. `claude /login` as the account you want to save
+2. Click ClaudeDock menu bar icon → **`Save current login as…`**
+3. Enter a label (e.g. `Main`, `Sub1`)
+
+The slot appears immediately. The same flow works for replacing a stale
+slot — `Save current login as…` overwrites by label if it already exists.
+
+Manual fallback (for renames, deletes, or scripted setup):
 
 ```bash
 BLOB=$(security find-generic-password -s "Claude Code-credentials" -w)
 security add-generic-password -U -s "ClaudeDock Account Main" -a ClaudeDock -w "$BLOB"
 ```
 
-Register it in `claudedock.json` and set `activeAccountId` to match.
+Then register the slot in `~/.claude/claudedock.json`:
 
-To switch the live login, overwrite the `Claude Code-credentials` slot
-with the target saved bundle's blob and update `activeAccountId`. Any
-running `claude` CLI keeps its old token in memory — restart it.
+```json
+{"accounts": [{"id": "main", "label": "Main", "kind": "claude"}]}
+```
+
+### Switching active login
+
+Click **`↪ Switch to <label>`** under any non-active account card. The
+keychain `Claude Code-credentials` slot is overwritten, `activeAccountId`
+is updated, and the menu refreshes.
+
+**Caveat: running `claude` CLI keeps its old token in memory.** The swap
+only affects the *next* `claude` launch. Already-open sessions continue
+on the previous account until they exit.
+
+If the target slot has a dead refresh token, the menu marks it
+`(stale — needs re-login)` and a confirmation dialog appears before the
+swap. Either re-save that slot via `Save current login as…` after running
+`claude /login`, or proceed and re-run `/login` post-swap.
+
+![Menu showing per-account cards and Switch to Sub1 action](docs/images/menu-switch.png)
 
 ### Known limitation
 
@@ -172,7 +196,7 @@ ClaudeDock is installed as a **user LaunchAgent**, not a system daemon.
 - Binary:
   - `~/Library/Application Support/ClaudeDock/bin/ClaudeDock`
 - LaunchAgent plist:
-  - `~/Library/LaunchAgents/com.sskys.ClaudeDock.plist`
+  - `~/Library/LaunchAgents/com.claudedock.ClaudeDock.plist`
 - Logs:
   - `~/Library/Logs/ClaudeDock/stdout.log`
   - `~/Library/Logs/ClaudeDock/stderr.log`
@@ -236,7 +260,7 @@ This is separate from ClaudeDock itself, but kept in sync by the installer.
 - `ClaudeDock/MenuBuilder.swift` — dropdown menu construction
 - `ClaudeDock/Models.swift` — shared data models
 - `ClaudeDock/AccountStore.swift` — keychain bundle I/O via `security`
-- `ClaudeDock/AccountSwitcher.swift` — save/switch/rename/delete helpers (config-driven; no UI)
+- `ClaudeDock/AccountSwitcher.swift` — save/switch/rename/delete helpers (switch + save wired into menu; rename/delete still CLI-only)
 - `ClaudeDock/OAuthRefresher.swift` — token refresh against Anthropic OAuth endpoint
 - `ClaudeDock/ClaudeDockEntry.swift` — app entry point
 
@@ -273,7 +297,7 @@ Reinstall + restart LaunchAgent:
 Check LaunchAgent status:
 
 ```bash
-launchctl print gui/$(id -u)/com.sskys.ClaudeDock
+launchctl print gui/$(id -u)/com.claudedock.ClaudeDock
 ```
 
 ## Current limitation

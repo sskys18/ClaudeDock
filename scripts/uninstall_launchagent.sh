@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLIST_PATH="$HOME/Library/LaunchAgents/com.sskys.ClaudeDock.plist"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.claudedock.ClaudeDock.plist"
 INSTALL_BIN="$HOME/Library/Application Support/ClaudeDock/bin/ClaudeDock"
-LABEL="com.sskys.ClaudeDock"
+LABEL="com.claudedock.ClaudeDock"
 UID_VALUE="$(id -u)"
 
 if [[ -f "$PLIST_PATH" ]]; then

@@ -15,8 +15,7 @@ DerivedData/
 # Cache
 *.swp
 
-# Docs (contain auth/API details)
-docs/
+# Local-only state
 .omx/
 .codex/
 .claude/
