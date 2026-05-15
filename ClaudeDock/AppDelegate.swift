@@ -1,6 +1,5 @@
 import Cocoa
 import ClaudeDockCore
-import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderDelegate {
     private var statusItem: NSStatusItem!
@@ -22,8 +21,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
             autoRotateEnabled: config.rotation.enabled
         )
         menuBuilder.delegate = self
-
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let logo = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "ClaudeDock") {
@@ -92,15 +89,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
     }
 
     private func postRotationNotification(label: String, reason: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "ClaudeDock rotated → \(label)"
-        content.body = "\(reason). Restart claude to pick up new account."
-        let req = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(req) { _ in }
+        NSLog("ClaudeDock rotated → %@: %@", label, reason)
+        let n = NSUserNotification()
+        n.title = "ClaudeDock rotated → \(label)"
+        n.informativeText = "\(reason). Restart claude to pick up."
+        NSUserNotificationCenter.default.deliver(n)
     }
 
     private func parseISO8601(_ iso: String) -> Date? {
