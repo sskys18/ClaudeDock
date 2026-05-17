@@ -50,7 +50,8 @@ class UsageService {
             codexMetrics: nil,
             timestamp: Date().timeIntervalSince1970 * 1000
         )
-        let codexMetrics = loadCodexMetrics() ?? cached.codexMetrics
+        let codexMetrics = await fetchCodexUsageLive()
+            ?? loadCodexMetrics() ?? cached.codexMetrics
 
         guard !isFetching else {
             return buildStaleResult(config: config, cache: cached,
@@ -275,6 +276,75 @@ class UsageService {
             try? FileManager.default.createDirectory(atPath: cacheDir,
                                                      withIntermediateDirectories: true)
         }
+    }
+
+    // MARK: - Codex live usage (chatgpt.com/backend-api/wham/usage)
+
+    private struct CodexUsageResponse: Decodable {
+        struct Window: Decodable {
+            let used_percent: Double?
+            let reset_at: Double?
+        }
+        struct RateLimit: Decodable {
+            let primary_window: Window?
+            let secondary_window: Window?
+        }
+        let plan_type: String?
+        let rate_limit: RateLimit?
+    }
+
+    /// Live Codex quota from the same endpoint the codex CLI polls. Returns
+    /// nil on any failure (missing/expired token, offline) so callers fall
+    /// back to rollout/omx scraping.
+    private func fetchCodexUsageLive() async -> CodexMetrics? {
+        // Prefer ~/.codex (where the codex CLI keeps the auto-refreshed
+        // token); fall back to $CODEX_HOME. First file with a token wins.
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".codex", isDirectory: true)
+        var candidates = [home.appendingPathComponent("auth.json")]
+        if let ch = ProcessInfo.processInfo.environment["CODEX_HOME"], !ch.isEmpty {
+            candidates.append(URL(fileURLWithPath: ch).appendingPathComponent("auth.json"))
+        }
+        var access = ""
+        var accountId = ""
+        for path in candidates {
+            guard let data = try? Data(contentsOf: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tokens = json["tokens"] as? [String: Any],
+                  let tok = tokens["access_token"] as? String, !tok.isEmpty
+            else { continue }
+            access = tok
+            accountId = (tokens["account_id"] as? String) ?? ""
+            break
+        }
+        guard !access.isEmpty else { return nil }
+
+        var req = URLRequest(
+            url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+            timeoutInterval: apiTimeout
+        )
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+        req.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
+        req.setValue("codex-cli", forHTTPHeaderField: "User-Agent")
+
+        guard let (body, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let usage = try? JSONDecoder().decode(CodexUsageResponse.self, from: body)
+        else { return nil }
+
+        let p = usage.rate_limit?.primary_window
+        let s = usage.rate_limit?.secondary_window
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        return CodexMetrics(
+            last_activity: nowISO,
+            session_total_tokens: nil,
+            five_hour_limit_pct: p?.used_percent,
+            weekly_limit_pct: s?.used_percent,
+            five_hour_resets_at: p?.reset_at,
+            weekly_resets_at: s?.reset_at,
+            plan_type: usage.plan_type
+        )
     }
 
     // MARK: - Codex metrics (unchanged logic from previous version)
