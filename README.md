@@ -2,6 +2,8 @@
 
 ClaudeDock is a lightweight macOS menu bar app that shows **Claude** and **Codex/GPT** quota status in one place.
 
+![ClaudeDock menu](docs/images/menu.png)
+
 It is designed to:
 - stay in the macOS menu bar (`LSUIElement` app)
 - reuse existing local auth/state instead of creating duplicate login flows
@@ -120,8 +122,6 @@ If the target slot has a dead refresh token, the menu marks it
 `(stale — needs re-login)` and a confirmation dialog appears before the
 swap. Either re-save that slot via `Save current login as…` after running
 `claude /login`, or proceed and re-run `/login` post-swap.
-
-![Menu showing per-account cards and Switch to Sub1 action](docs/images/menu-switch.png)
 
 ### Auto-rotation
 
