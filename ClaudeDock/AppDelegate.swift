@@ -214,27 +214,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
         }
     }
 
-    @objc func saveCurrentAs(_ sender: NSMenuItem) {
-        let a = NSAlert()
-        a.messageText = "Save current Claude Code login"
-        a.informativeText = "Enter a label for the saved slot."
-        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        tf.placeholderString = "e.g. Main, Sub1"
-        a.accessoryView = tf
-        a.addButton(withTitle: "Save")
-        a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
-        let label = tf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty else { return }
-        do {
-            try AccountSwitcher.saveCurrentAs(label: label, config: &config)
-            usageService.saveConfig(config)
-            Task { await refresh() }
-        } catch {
-            showError("Save failed", String(describing: error))
-        }
-    }
-
     @objc func toggleAutoRotate(_ sender: NSMenuItem) {
         config.rotation.enabled.toggle()
         usageService.saveConfig(config)

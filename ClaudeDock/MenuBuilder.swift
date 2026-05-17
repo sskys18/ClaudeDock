@@ -4,7 +4,6 @@ import Cocoa
     func refreshNow()
     func changeInterval(_ sender: NSMenuItem)
     func switchAccount(_ sender: NSMenuItem)
-    func saveCurrentAs(_ sender: NSMenuItem)
     func toggleAutoRotate(_ sender: NSMenuItem)
 }
 
@@ -80,13 +79,6 @@ class MenuBuilder {
             menu.addItem(buildCodexRow(codex: codex))
         }
         menu.addItem(.separator())
-        let saveItem = NSMenuItem(
-            title: "Save current login as…",
-            action: #selector(MenuBuilderDelegate.saveCurrentAs(_:)),
-            keyEquivalent: ""
-        )
-        saveItem.target = delegate
-        menu.addItem(saveItem)
 
         // Rotation only makes sense with ≥2 Claude accounts. With a single
         // account (+ Codex) there's nothing to rotate to — hide the toggle.
