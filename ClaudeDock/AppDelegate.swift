@@ -55,6 +55,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
 
     private func evaluateAutoRotation(_ result: FetchResult) {
         guard config.rotation.enabled else { return }
+        // Need ≥2 Claude accounts to rotate; single-account setups skip.
+        guard result.accounts.count >= 2 else { return }
         if ProcessInfo.processInfo.environment["CLAUDEDOCK_AUTO_ROTATE"] == "0" {
             return
         }

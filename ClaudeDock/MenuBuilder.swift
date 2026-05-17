@@ -88,13 +88,17 @@ class MenuBuilder {
         saveItem.target = delegate
         menu.addItem(saveItem)
 
-        let rotateItem = NSMenuItem(
-            title: autoRotateEnabled ? "✓ Auto-rotate accounts" : "Auto-rotate accounts",
-            action: #selector(MenuBuilderDelegate.toggleAutoRotate(_:)),
-            keyEquivalent: ""
-        )
-        rotateItem.target = delegate
-        menu.addItem(rotateItem)
+        // Rotation only makes sense with ≥2 Claude accounts. With a single
+        // account (+ Codex) there's nothing to rotate to — hide the toggle.
+        if result.accounts.count >= 2 {
+            let rotateItem = NSMenuItem(
+                title: autoRotateEnabled ? "✓ Auto-rotate accounts" : "Auto-rotate accounts",
+                action: #selector(MenuBuilderDelegate.toggleAutoRotate(_:)),
+                keyEquivalent: ""
+            )
+            rotateItem.target = delegate
+            menu.addItem(rotateItem)
+        }
 
         menu.addItem(NSMenuItem(title: "Quit ClaudeDock",
             action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
