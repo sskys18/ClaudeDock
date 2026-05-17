@@ -181,18 +181,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, MenuBuilderD
 
     // MARK: - MenuBuilderDelegate
 
-    @objc func refreshNow() {
-        usageService.clearBackoffs()
-        Task { await refresh() }
-    }
-
-    @objc func changeInterval(_ sender: NSMenuItem) {
-        config.refreshInterval = sender.tag
-        usageService.saveConfig(config)
-        menuBuilder.updateInterval(sender.tag)
-        startTimer()
-    }
-
     @objc func switchAccount(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         if let usage = lastResult?.accounts.first(where: { $0.account.id == id }),

@@ -104,9 +104,7 @@ final class BucketView: NSStackView {
 }
 
 final class HeaderView: NSView {
-    private weak var delegate: MenuBuilderDelegate?
-    init(refreshedAt: Date, currentInterval: Int, delegate: MenuBuilderDelegate?) {
-        self.delegate = delegate
+    init(refreshedAt: Date, currentInterval: Int) {
         super.init(frame: .zero)
 
         let stack = NSStackView()
@@ -130,16 +128,6 @@ final class HeaderView: NSView {
         ts.textColor = .secondaryLabelColor
         stack.addArrangedSubview(ts)
 
-        let rbImg = NSImage(systemSymbolName: "arrow.clockwise",
-                            accessibilityDescription: "Refresh")!
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))!
-        let rb = NSButton(image: rbImg, target: self,
-                          action: #selector(refreshClicked))
-        rb.isBordered = false
-        rb.bezelStyle = .inline
-        rb.contentTintColor = .secondaryLabelColor
-        stack.addArrangedSubview(rb)
-
         let intervalLbl = NSTextField(labelWithString: Self.formatInterval(currentInterval))
         intervalLbl.font = Typography.headerInterval()
         intervalLbl.textColor = .tertiaryLabelColor
@@ -151,11 +139,6 @@ final class HeaderView: NSView {
         frame.size = sz
     }
     required init?(coder: NSCoder) { nil }
-
-    @objc private func refreshClicked() {
-        delegate?.refreshNow()
-        enclosingMenuItem?.menu?.cancelTracking()
-    }
 
     private static func formatInterval(_ s: Int) -> String {
         s < 60 ? "\(s)s" : "\(s / 60)m"

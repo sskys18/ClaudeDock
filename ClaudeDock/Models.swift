@@ -88,7 +88,7 @@ struct AppConfig: Codable {
     var rotation: RotationConfig
 
     static let defaultConfig = AppConfig(
-        refreshInterval: 30,
+        refreshInterval: 10,
         accounts: [],
         activeAccountId: nil,
         rotation: .defaultConfig
@@ -115,7 +115,7 @@ struct AppConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.refreshInterval = (try? c.decode(Int.self, forKey: .refreshInterval)) ?? 30
+        self.refreshInterval = (try? c.decode(Int.self, forKey: .refreshInterval)) ?? 10
         self.accounts = (try? c.decode([AccountRef].self, forKey: .accounts)) ?? []
         self.activeAccountId = try? c.decode(String?.self, forKey: .activeAccountId)
         self.rotation = (try? c.decode(RotationConfig.self, forKey: .rotation)) ?? .defaultConfig

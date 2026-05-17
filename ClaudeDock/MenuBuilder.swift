@@ -1,8 +1,6 @@
 import Cocoa
 
 @objc protocol MenuBuilderDelegate: AnyObject {
-    func refreshNow()
-    func changeInterval(_ sender: NSMenuItem)
     func switchAccount(_ sender: NSMenuItem)
     func toggleAutoRotate(_ sender: NSMenuItem)
 }
@@ -40,8 +38,6 @@ class MenuBuilder {
     }
 
     func updateAutoRotate(_ enabled: Bool) { autoRotateEnabled = enabled }
-
-    func updateInterval(_ seconds: Int) { currentInterval = seconds }
 
     func buildMenu(from result: FetchResult) -> NSMenu {
         let menu = NSMenu()
@@ -102,8 +98,7 @@ class MenuBuilder {
         let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         item.view = HeaderView(
             refreshedAt: result.refreshedAt,
-            currentInterval: currentInterval,
-            delegate: delegate
+            currentInterval: currentInterval
         )
         return item
     }
@@ -166,11 +161,4 @@ class MenuBuilder {
         return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
     }
 
-    private func smallFont() -> NSFont {
-        NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
-    }
-
-    private func formatInterval(_ s: Int) -> String {
-        s < 60 ? "\(s)s" : "\(s / 60)m"
-    }
 }
